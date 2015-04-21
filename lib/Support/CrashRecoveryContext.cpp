@@ -8,13 +8,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/CrashRecoveryContext.h"
-#include "llvm/ADT/SmallString.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/Mutex.h"
 #include "llvm/Support/ThreadLocal.h"
-#include <cstdio>
 #include <setjmp.h>
 using namespace llvm;
 
@@ -22,7 +20,8 @@ namespace {
 
 struct CrashRecoveryContextImpl;
 
-static ManagedStatic<sys::ThreadLocal<const CrashRecoveryContextImpl> > CurrentContext;
+static ManagedStatic<
+    sys::ThreadLocal<const CrashRecoveryContextImpl> > CurrentContext;
 
 struct CrashRecoveryContextImpl {
   CrashRecoveryContext *CRC;
@@ -231,7 +230,8 @@ void CrashRecoveryContext::Disable() {
 
 #include <signal.h>
 
-static const int Signals[] = { SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP };
+static const int Signals[] =
+    { SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP };
 static const unsigned NumSignals = sizeof(Signals) / sizeof(Signals[0]);
 static struct sigaction PrevActions[NumSignals];
 
@@ -301,7 +301,7 @@ void CrashRecoveryContext::Disable() {
 
 #endif
 
-bool CrashRecoveryContext::RunSafely(void (*Fn)(void*), void *UserData) {
+bool CrashRecoveryContext::RunSafely(function_ref<void()> Fn) {
   // If crash recovery is disabled, do nothing.
   if (gCrashRecoveryEnabled) {
     assert(!Impl && "Crash recovery context already initialized!");
@@ -313,7 +313,7 @@ bool CrashRecoveryContext::RunSafely(void (*Fn)(void*), void *UserData) {
     }
   }
 
-  Fn(UserData);
+  Fn();
   return true;
 }
 
@@ -330,13 +330,26 @@ const std::string &CrashRecoveryContext::getBacktrace() const {
   return CRC->Backtrace;
 }
 
-//
+// FIXME: Portability.
+static void setThreadBackgroundPriority() {
+#ifdef __APPLE__
+  setpriority(PRIO_DARWIN_THREAD, 0, PRIO_DARWIN_BG);
+#endif
+}
+
+static bool hasThreadBackgroundPriority() {
+#ifdef __APPLE__
+  return getpriority(PRIO_DARWIN_THREAD, 0) == 1;
+#else
+  return false;
+#endif
+}
 
 namespace {
 struct RunSafelyOnThreadInfo {
-  void (*Fn)(void*);
-  void *Data;
+  function_ref<void()> Fn;
   CrashRecoveryContext *CRC;
+  bool UseBackgroundPriority;
   bool Result;
 };
 }
@@ -344,11 +357,16 @@ struct RunSafelyOnThreadInfo {
 static void RunSafelyOnThread_Dispatch(void *UserData) {
   RunSafelyOnThreadInfo *Info =
     reinterpret_cast<RunSafelyOnThreadInfo*>(UserData);
-  Info->Result = Info->CRC->RunSafely(Info->Fn, Info->Data);
+
+  if (Info->UseBackgroundPriority)
+    setThreadBackgroundPriority();
+
+  Info->Result = Info->CRC->RunSafely(Info->Fn);
 }
-bool CrashRecoveryContext::RunSafelyOnThread(void (*Fn)(void*), void *UserData,
+bool CrashRecoveryContext::RunSafelyOnThread(function_ref<void()> Fn,
                                              unsigned RequestedStackSize) {
-  RunSafelyOnThreadInfo Info = { Fn, UserData, this, false };
+  bool UseBackgroundPriority = hasThreadBackgroundPriority();
+  RunSafelyOnThreadInfo Info = { Fn, this, UseBackgroundPriority, false };
   llvm_execute_on_thread(RunSafelyOnThread_Dispatch, &Info, RequestedStackSize);
   if (CrashRecoveryContextImpl *CRC = (CrashRecoveryContextImpl *)Impl)
     CRC->setSwitchedThread();

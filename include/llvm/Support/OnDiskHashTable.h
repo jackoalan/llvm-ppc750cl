@@ -11,11 +11,11 @@
 /// \brief Defines facilities for reading and writing on-disk hash tables.
 ///
 //===----------------------------------------------------------------------===//
-#ifndef LLVM_SUPPORT_ON_DISK_HASH_TABLE_H
-#define LLVM_SUPPORT_ON_DISK_HASH_TABLE_H
+#ifndef LLVM_SUPPORT_ONDISKHASHTABLE_H
+#define LLVM_SUPPORT_ONDISKHASHTABLE_H
 
-#include "llvm/Support/Allocator.h"
 #include "llvm/Support/AlignOf.h"
+#include "llvm/Support/Allocator.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/Host.h"
@@ -56,11 +56,6 @@ namespace llvm {
 /// };
 /// \endcode
 template <typename Info> class OnDiskChainedHashTableGenerator {
-  typedef typename Info::offset_type offset_type;
-  offset_type NumBuckets;
-  offset_type NumEntries;
-  llvm::BumpPtrAllocator BA;
-
   /// \brief A single item in the hash table.
   class Item {
   public:
@@ -74,14 +69,16 @@ template <typename Info> class OnDiskChainedHashTableGenerator {
         : Key(Key), Data(Data), Next(nullptr), Hash(InfoObj.ComputeHash(Key)) {}
   };
 
-  /// \brief A linked list of values in a particular hash bucket.
-  class Bucket {
-  public:
-    offset_type Off;
-    Item *Head;
-    unsigned Length;
+  typedef typename Info::offset_type offset_type;
+  offset_type NumBuckets;
+  offset_type NumEntries;
+  llvm::SpecificBumpPtrAllocator<Item> BA;
 
-    Bucket() {}
+  /// \brief A linked list of values in a particular hash bucket.
+  struct Bucket {
+    offset_type Off;
+    unsigned Length;
+    Item *Head;
   };
 
   Bucket *Buckets;
@@ -129,8 +126,7 @@ public:
     ++NumEntries;
     if (4 * NumEntries >= 3 * NumBuckets)
       resize(NumBuckets * 2);
-    insert(Buckets, NumBuckets,
-           new (BA.Allocate<Item>()) Item(Key, Data, InfoObj));
+    insert(Buckets, NumBuckets, new (BA.Allocate()) Item(Key, Data, InfoObj));
   }
 
   /// \brief Emit the table to Out, which must not be at offset 0.
@@ -569,4 +565,4 @@ public:
 
 } // end namespace llvm
 
-#endif // LLVM_SUPPORT_ON_DISK_HASH_TABLE_H
+#endif

@@ -1,5 +1,4 @@
 // RUN: llvm-mc < %s -triple=aarch64-none-linux-gnu -filetype=obj | llvm-readobj -r | FileCheck %s
-// RUN: llvm-mc < %s -triple=arm64-none-linux-gnu -filetype=obj | llvm-readobj -r | FileCheck %s
 
 // External symbols are a different concept to global variables but should still
 // get relocations and so on when used.
@@ -28,7 +27,7 @@ check_extern:                           // @check_extern
 
 
 // CHECK: Relocations [
-// CHECK:   Section (2) .rela.text {
+// CHECK:   Section {{.*}} .rela.text {
 // CHECK:     0x{{[0-9,A-F]+}} R_AARCH64_CALL26 memcpy
 // CHECK:   }
 // CHECK: ]

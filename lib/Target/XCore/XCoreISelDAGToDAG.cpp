@@ -37,14 +37,12 @@ using namespace llvm;
 ///
 namespace {
   class XCoreDAGToDAGISel : public SelectionDAGISel {
-    const XCoreSubtarget &Subtarget;
 
   public:
     XCoreDAGToDAGISel(XCoreTargetMachine &TM, CodeGenOpt::Level OptLevel)
-      : SelectionDAGISel(TM, OptLevel),
-        Subtarget(*TM.getSubtargetImpl()) { }
+      : SelectionDAGISel(TM, OptLevel) {}
 
-    SDNode *Select(SDNode *N);
+    SDNode *Select(SDNode *N) override;
     SDNode *SelectBRIND(SDNode *N);
 
     /// getI32Imm - Return a target constant with the specified value, of type
@@ -67,10 +65,10 @@ namespace {
     // Complex Pattern Selectors.
     bool SelectADDRspii(SDValue Addr, SDValue &Base, SDValue &Offset);
 
-    bool SelectInlineAsmMemoryOperand(const SDValue &Op, char ConstraintCode,
+    bool SelectInlineAsmMemoryOperand(const SDValue &Op, unsigned ConstraintID,
                                       std::vector<SDValue> &OutOps) override;
 
-    virtual const char *getPassName() const {
+    const char *getPassName() const override {
       return "XCore DAG->DAG Pattern Instruction Selection";
     } 
     
@@ -110,12 +108,12 @@ bool XCoreDAGToDAGISel::SelectADDRspii(SDValue Addr, SDValue &Base,
 }
 
 bool XCoreDAGToDAGISel::
-SelectInlineAsmMemoryOperand(const SDValue &Op, char ConstraintCode,
+SelectInlineAsmMemoryOperand(const SDValue &Op, unsigned ConstraintID,
                              std::vector<SDValue> &OutOps) {
   SDValue Reg;
-  switch (ConstraintCode) {
+  switch (ConstraintID) {
   default: return true;
-  case 'm': // Memory.
+  case InlineAsm::Constraint_m: // Memory.
     switch (Op.getOpcode()) {
     default: return true;
     case XCoreISD::CPRelativeWrapper:

@@ -43,10 +43,11 @@ namespace {
           *OutStreamer.getTargetStreamer());
     }
   public:
-    explicit SparcAsmPrinter(TargetMachine &TM, MCStreamer &Streamer)
-      : AsmPrinter(TM, Streamer) {}
+    explicit SparcAsmPrinter(TargetMachine &TM,
+                             std::unique_ptr<MCStreamer> Streamer)
+        : AsmPrinter(TM, std::move(Streamer)) {}
 
-    virtual const char *getPassName() const {
+    const char *getPassName() const override {
       return "Sparc Assembly Printer";
     }
 
@@ -55,9 +56,8 @@ namespace {
                          const char *Modifier = nullptr);
     void printCCOperand(const MachineInstr *MI, int opNum, raw_ostream &OS);
 
-    virtual void EmitFunctionBodyStart();
-    virtual void EmitInstruction(const MachineInstr *MI);
-    virtual void EmitEndOfAsmFile(Module &M);
+    void EmitFunctionBodyStart() override;
+    void EmitInstruction(const MachineInstr *MI) override;
 
     static const char *getRegisterName(unsigned RegNo) {
       return SparcInstPrinter::getRegisterName(RegNo);
@@ -65,10 +65,10 @@ namespace {
 
     bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
                          unsigned AsmVariant, const char *ExtraCode,
-                         raw_ostream &O);
+                         raw_ostream &O) override;
     bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
                                unsigned AsmVariant, const char *ExtraCode,
-                               raw_ostream &O);
+                               raw_ostream &O) override;
 
     void LowerGETPCXAndEmitMCInsts(const MachineInstr *MI,
                                    const MCSubtargetInfo &STI);
@@ -277,7 +277,7 @@ void SparcAsmPrinter::EmitInstruction(const MachineInstr *MI)
 }
 
 void SparcAsmPrinter::EmitFunctionBodyStart() {
-  if (!TM.getSubtarget<SparcSubtarget>().is64Bit())
+  if (!MF->getSubtarget<SparcSubtarget>().is64Bit())
     return;
 
   const MachineRegisterInfo &MRI = MF->getRegInfo();
@@ -439,23 +439,6 @@ bool SparcAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
   O << ']';
 
   return false;
-}
-
-void SparcAsmPrinter::EmitEndOfAsmFile(Module &M) {
-  const TargetLoweringObjectFileELF &TLOFELF =
-    static_cast<const TargetLoweringObjectFileELF &>(getObjFileLowering());
-  MachineModuleInfoELF &MMIELF = MMI->getObjFileInfo<MachineModuleInfoELF>();
-
-  // Generate stubs for global variables.
-  MachineModuleInfoELF::SymbolListTy Stubs = MMIELF.GetGVStubList();
-  if (!Stubs.empty()) {
-    OutStreamer.SwitchSection(TLOFELF.getDataSection());
-    unsigned PtrSize = TM.getDataLayout()->getPointerSize(0);
-    for (unsigned i = 0, e = Stubs.size(); i != e; ++i) {
-      OutStreamer.EmitLabel(Stubs[i].first);
-      OutStreamer.EmitSymbolValue(Stubs[i].second.getPointer(), PtrSize);
-    }
-  }
 }
 
 // Force static initialization.

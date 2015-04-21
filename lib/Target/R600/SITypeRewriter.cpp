@@ -39,9 +39,9 @@ class SITypeRewriter : public FunctionPass,
 
 public:
   SITypeRewriter() : FunctionPass(ID) { }
-  virtual bool doInitialization(Module &M);
-  virtual bool runOnFunction(Function &F);
-  virtual const char *getPassName() const {
+  bool doInitialization(Module &M) override;
+  bool runOnFunction(Function &F) override;
+  const char *getPassName() const override {
     return "SI Type Rewriter";
   }
   void visitLoadInst(LoadInst &I);
@@ -61,8 +61,7 @@ bool SITypeRewriter::doInitialization(Module &M) {
 }
 
 bool SITypeRewriter::runOnFunction(Function &F) {
-  AttributeSet Set = F.getAttributes();
-  Attribute A = Set.getAttribute(AttributeSet::FunctionIndex, "ShaderType");
+  Attribute A = F.getFnAttribute("ShaderType");
 
   unsigned ShaderType = ShaderType::COMPUTE;
   if (A.isStringAttribute()) {
@@ -87,7 +86,7 @@ void SITypeRewriter::visitLoadInst(LoadInst &I) {
     Value *BitCast = Builder.CreateBitCast(Ptr,
         PointerType::get(v4i32,PtrTy->getPointerAddressSpace()));
     LoadInst *Load = Builder.CreateLoad(BitCast);
-    SmallVector <std::pair<unsigned, MDNode*>, 8> MD;
+    SmallVector<std::pair<unsigned, MDNode *>, 8> MD;
     I.getAllMetadataOtherThanDebugLoc(MD);
     for (unsigned i = 0, e = MD.size(); i != e; ++i) {
       Load->setMetadata(MD[i].first, MD[i].second);
@@ -105,7 +104,7 @@ void SITypeRewriter::visitCallInst(CallInst &I) {
   SmallVector <Type*, 8> Types;
   bool NeedToReplace = false;
   Function *F = I.getCalledFunction();
-  std::string Name = F->getName().str();
+  std::string Name = F->getName();
   for (unsigned i = 0, e = I.getNumArgOperands(); i != e; ++i) {
     Value *Arg = I.getArgOperand(i);
     if (Arg->getType() == v16i8) {
@@ -119,8 +118,7 @@ void SITypeRewriter::visitCallInst(CallInst &I) {
                                               Type::getInt32Ty(I.getContext())){
       Type *ElementTy = Arg->getType()->getVectorElementType();
       std::string TypeName = "i32";
-      InsertElementInst *Def = dyn_cast<InsertElementInst>(Arg);
-      assert(Def);
+      InsertElementInst *Def = cast<InsertElementInst>(Arg);
       Args.push_back(Def->getOperand(1));
       Types.push_back(ElementTy);
       std::string VecTypeName = "v1" + TypeName;

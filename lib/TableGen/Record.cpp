@@ -114,8 +114,21 @@ Init *BitRecTy::convertValue(IntInit *II) {
 
 Init *BitRecTy::convertValue(TypedInit *VI) {
   RecTy *Ty = VI->getType();
-  if (isa<BitRecTy>(Ty) || isa<BitsRecTy>(Ty) || isa<IntRecTy>(Ty))
+  if (isa<BitRecTy>(Ty))
     return VI;  // Accept variable if it is already of bit type!
+  if (auto *BitsTy = dyn_cast<BitsRecTy>(Ty))
+    // Accept only bits<1> expression.
+    return BitsTy->getNumBits() == 1 ? VI : nullptr;
+  // Ternary !if can be converted to bit, but only if both sides are
+  // convertible to a bit.
+  if (TernOpInit *TOI = dyn_cast<TernOpInit>(VI)) {
+    if (TOI->getOpcode() != TernOpInit::TernaryOp::IF)
+      return nullptr;
+    if (!TOI->getMHS()->convertInitializerTo(BitRecTy::get()) ||
+        !TOI->getRHS()->convertInitializerTo(BitRecTy::get()))
+      return nullptr;
+    return TOI;
+  }
   return nullptr;
 }
 
@@ -623,9 +636,8 @@ static void ProfileListInit(FoldingSetNodeID &ID,
 ListInit *ListInit::get(ArrayRef<Init *> Range, RecTy *EltTy) {
   typedef FoldingSet<ListInit> Pool;
   static Pool ThePool;
+  static std::vector<std::unique_ptr<ListInit>> TheActualPool;
 
-  // Just use the FoldingSetNodeID to compute a hash.  Use a DenseMap
-  // for actual storage.
   FoldingSetNodeID ID;
   ProfileListInit(ID, Range, EltTy);
 
@@ -635,6 +647,7 @@ ListInit *ListInit::get(ArrayRef<Init *> Range, RecTy *EltTy) {
 
   ListInit *I = new ListInit(Range, EltTy);
   ThePool.InsertNode(I, IP);
+  TheActualPool.push_back(std::unique_ptr<ListInit>(I));
   return I;
 }
 
@@ -799,7 +812,7 @@ Init *UnOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
             return VarInit::get(MCName, RV->getType());
           }
         }
-
+        assert(CurRec && "NULL pointer");
         if (Record *D = (CurRec->getRecords()).getDef(Name))
           return DefInit::get(D);
 
@@ -811,20 +824,14 @@ Init *UnOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
   }
   case HEAD: {
     if (ListInit *LHSl = dyn_cast<ListInit>(LHS)) {
-      if (LHSl->getSize() == 0) {
-        assert(0 && "Empty list in car");
-        return nullptr;
-      }
+      assert(LHSl->getSize() != 0 && "Empty list in car");
       return LHSl->getElement(0);
     }
     break;
   }
   case TAIL: {
     if (ListInit *LHSl = dyn_cast<ListInit>(LHS)) {
-      if (LHSl->getSize() == 0) {
-        assert(0 && "Empty list in cdr");
-        return nullptr;
-      }
+      assert(LHSl->getSize() != 0 && "Empty list in cdr");
       // Note the +1.  We can't just pass the result of getValues()
       // directly.
       ArrayRef<Init *>::iterator begin = LHSl->getValues().begin()+1;
@@ -918,6 +925,18 @@ Init *BinOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
     }
     break;
   }
+  case LISTCONCAT: {
+    ListInit *LHSs = dyn_cast<ListInit>(LHS);
+    ListInit *RHSs = dyn_cast<ListInit>(RHS);
+    if (LHSs && RHSs) {
+      std::vector<Init *> Args;
+      Args.insert(Args.end(), LHSs->begin(), LHSs->end());
+      Args.insert(Args.end(), RHSs->begin(), RHSs->end());
+      return ListInit::get(
+          Args, static_cast<ListRecTy *>(LHSs->getType())->getElementType());
+    }
+    break;
+  }
   case STRCONCAT: {
     StringInit *LHSs = dyn_cast<StringInit>(LHS);
     StringInit *RHSs = dyn_cast<StringInit>(RHS);
@@ -946,17 +965,21 @@ Init *BinOpInit::Fold(Record *CurRec, MultiClass *CurMultiClass) const {
     break;
   }
   case ADD:
+  case AND:
   case SHL:
   case SRA:
   case SRL: {
-    IntInit *LHSi = dyn_cast<IntInit>(LHS);
-    IntInit *RHSi = dyn_cast<IntInit>(RHS);
+    IntInit *LHSi =
+      dyn_cast_or_null<IntInit>(LHS->convertInitializerTo(IntRecTy::get()));
+    IntInit *RHSi =
+      dyn_cast_or_null<IntInit>(RHS->convertInitializerTo(IntRecTy::get()));
     if (LHSi && RHSi) {
       int64_t LHSv = LHSi->getValue(), RHSv = RHSi->getValue();
       int64_t Result;
       switch (getOpcode()) {
       default: llvm_unreachable("Bad opcode!");
       case ADD: Result = LHSv +  RHSv; break;
+      case AND: Result = LHSv &  RHSv; break;
       case SHL: Result = LHSv << RHSv; break;
       case SRA: Result = LHSv >> RHSv; break;
       case SRL: Result = (uint64_t)LHSv >> (uint64_t)RHSv; break;
@@ -983,10 +1006,12 @@ std::string BinOpInit::getAsString() const {
   switch (Opc) {
   case CONCAT: Result = "!con"; break;
   case ADD: Result = "!add"; break;
+  case AND: Result = "!and"; break;
   case SHL: Result = "!shl"; break;
   case SRA: Result = "!sra"; break;
   case SRL: Result = "!srl"; break;
   case EQ: Result = "!eq"; break;
+  case LISTCONCAT: Result = "!listconcat"; break;
   case STRCONCAT: Result = "!strconcat"; break;
   }
   return Result + "(" + LHS->getAsString() + ", " + RHS->getAsString() + ")";
@@ -1604,7 +1629,7 @@ std::string DagInit::getAsString() const {
   std::string Result = "(" + Val->getAsString();
   if (!ValName.empty())
     Result += ":" + ValName;
-  if (Args.size()) {
+  if (!Args.empty()) {
     Result += " " + Args[0]->getAsString();
     if (!ArgNames[0].empty()) Result += ":$" + ArgNames[0];
     for (unsigned i = 1, e = Args.size(); i != e; ++i) {
@@ -1683,13 +1708,6 @@ const std::string &Record::getName() const {
 }
 
 void Record::setName(Init *NewName) {
-  if (TrackedRecords.getDef(Name->getAsUnquotedString()) == this) {
-    TrackedRecords.removeDef(Name->getAsUnquotedString());
-    TrackedRecords.addDef(this);
-  } else if (TrackedRecords.getClass(Name->getAsUnquotedString()) == this) {
-    TrackedRecords.removeClass(Name->getAsUnquotedString());
-    TrackedRecords.addClass(this);
-  }  // Otherwise this isn't yet registered.
   Name = NewName;
   checkName();
   // DO NOT resolve record values to the name at this point because
@@ -1989,16 +2007,14 @@ void RecordKeeper::dump() const { errs() << *this; }
 
 raw_ostream &llvm::operator<<(raw_ostream &OS, const RecordKeeper &RK) {
   OS << "------------- Classes -----------------\n";
-  const std::map<std::string, Record*> &Classes = RK.getClasses();
-  for (std::map<std::string, Record*>::const_iterator I = Classes.begin(),
-         E = Classes.end(); I != E; ++I)
-    OS << "class " << *I->second;
+  const auto &Classes = RK.getClasses();
+  for (const auto &C : Classes)
+    OS << "class " << *C.second;
 
   OS << "------------- Defs -----------------\n";
-  const std::map<std::string, Record*> &Defs = RK.getDefs();
-  for (std::map<std::string, Record*>::const_iterator I = Defs.begin(),
-         E = Defs.end(); I != E; ++I)
-    OS << "def " << *I->second;
+  const auto &Defs = RK.getDefs();
+  for (const auto &D : Defs)
+    OS << "def " << *D.second;
   return OS;
 }
 
@@ -2013,10 +2029,9 @@ RecordKeeper::getAllDerivedDefinitions(const std::string &ClassName) const {
     PrintFatalError("ERROR: Couldn't find the `" + ClassName + "' class!\n");
 
   std::vector<Record*> Defs;
-  for (std::map<std::string, Record*>::const_iterator I = getDefs().begin(),
-         E = getDefs().end(); I != E; ++I)
-    if (I->second->isSubClassOf(Class))
-      Defs.push_back(I->second);
+  for (const auto &D : getDefs())
+    if (D.second->isSubClassOf(Class))
+      Defs.push_back(D.second.get());
 
   return Defs;
 }
@@ -2025,7 +2040,7 @@ RecordKeeper::getAllDerivedDefinitions(const std::string &ClassName) const {
 /// to CurRec's name.
 Init *llvm::QualifyName(Record &CurRec, MultiClass *CurMultiClass,
                         Init *Name, const std::string &Scoper) {
-  RecTy *Type = dyn_cast<TypedInit>(Name)->getType();
+  RecTy *Type = cast<TypedInit>(Name)->getType();
 
   BinOpInit *NewName =
     BinOpInit::get(BinOpInit::STRCONCAT, 

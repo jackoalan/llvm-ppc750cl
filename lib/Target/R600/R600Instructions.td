@@ -125,7 +125,7 @@ class R600_1OP <bits<11> inst, string opName, list<dag> pattern,
 class R600_1OP_Helper <bits<11> inst, string opName, SDPatternOperator node,
                     InstrItinClass itin = AnyALU> :
     R600_1OP <inst, opName,
-              [(set R600_Reg32:$dst, (node R600_Reg32:$src0))]
+              [(set R600_Reg32:$dst, (node R600_Reg32:$src0))], itin
 >;
 
 // If you add or change the operands for R600_2OP instructions, you must
@@ -161,10 +161,10 @@ class R600_2OP <bits<11> inst, string opName, list<dag> pattern,
 }
 
 class R600_2OP_Helper <bits<11> inst, string opName, SDPatternOperator node,
-                       InstrItinClass itim = AnyALU> :
+                       InstrItinClass itin = AnyALU> :
     R600_2OP <inst, opName,
               [(set R600_Reg32:$dst, (node R600_Reg32:$src0,
-                                           R600_Reg32:$src1))]
+                                           R600_Reg32:$src1))], itin
 >;
 
 // If you add our change the operands for R600_3OP instructions, you must
@@ -216,7 +216,7 @@ class R600_REDUCTION <bits<11> inst, dag ins, string asm, list<dag> pattern,
 def TEX_SHADOW : PatLeaf<
   (imm),
   [{uint32_t TType = (uint32_t)N->getZExtValue();
-    return (TType >= 6 && TType <= 8) || (TType >= 11 && TType <= 13);
+    return (TType >= 6 && TType <= 8) || TType == 13;
   }]
 >;
 
@@ -335,10 +335,11 @@ def load_param : LoadParamFrag<load>;
 def load_param_exti8 : LoadParamFrag<az_extloadi8>;
 def load_param_exti16 : LoadParamFrag<az_extloadi16>;
 
-def isR600 : Predicate<"Subtarget.getGeneration() <= AMDGPUSubtarget::R700">;
+def isR600 : Predicate<"Subtarget->getGeneration() <= AMDGPUSubtarget::R700">;
 
-def isR600toCayman : Predicate<
-                     "Subtarget.getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS">;
+def isR600toCayman
+    : Predicate<
+          "Subtarget->getGeneration() <= AMDGPUSubtarget::NORTHERN_ISLANDS">;
 
 //===----------------------------------------------------------------------===//
 // R600 SDNodes
@@ -475,13 +476,13 @@ class ExportBufWord1 {
 multiclass ExportPattern<Instruction ExportInst, bits<8> cf_inst> {
   def : Pat<(int_R600_store_pixel_depth R600_Reg32:$reg),
     (ExportInst
-        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sub0),
+        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), $reg, sub0),
         0, 61, 0, 7, 7, 7, cf_inst, 0)
   >;
 
   def : Pat<(int_R600_store_pixel_stencil R600_Reg32:$reg),
     (ExportInst
-        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), R600_Reg32:$reg, sub0),
+        (INSERT_SUBREG (v4f32 (IMPLICIT_DEF)), $reg, sub0),
         0, 61, 7, 0, 7, 7, cf_inst, 0)
   >;
 
@@ -513,17 +514,17 @@ multiclass SteamOutputExportPattern<Instruction ExportInst,
 // Stream1
   def : Pat<(int_R600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 1), (i32 imm:$mask)),
-      (ExportInst R600_Reg128:$src, 0, imm:$arraybase,
+      (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf1inst, 0)>;
 // Stream2
   def : Pat<(int_R600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 2), (i32 imm:$mask)),
-      (ExportInst R600_Reg128:$src, 0, imm:$arraybase,
+      (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf2inst, 0)>;
 // Stream3
   def : Pat<(int_R600_store_stream_output (v4f32 R600_Reg128:$src),
       (i32 imm:$arraybase), (i32 3), (i32 imm:$mask)),
-      (ExportInst R600_Reg128:$src, 0, imm:$arraybase,
+      (ExportInst $src, 0, imm:$arraybase,
       4095, imm:$mask, buf3inst, 0)>;
 }
 
@@ -579,6 +580,7 @@ i32imm:$COUNT, i32imm:$Enabled),
   let ALT_CONST = 0;
   let WHOLE_QUAD_MODE = 0;
   let BARRIER = 1;
+  let isCodeGenOnly = 1;
   let UseNamedOperandTable = 1;
 
   let Inst{31-0} = Word0;
@@ -641,6 +643,7 @@ def FETCH_CLAUSE : AMDGPUInst <(outs),
   field bits<8> Inst;
   bits<8> num;
   let Inst = num;
+  let isCodeGenOnly = 1;
 }
 
 def ALU_CLAUSE : AMDGPUInst <(outs),
@@ -648,10 +651,13 @@ def ALU_CLAUSE : AMDGPUInst <(outs),
   field bits<8> Inst;
   bits<8> num;
   let Inst = num;
+  let isCodeGenOnly = 1;
 }
 
 def LITERALS : AMDGPUInst <(outs),
 (ins LITERAL:$literal1, LITERAL:$literal2), "$literal1, $literal2", [] > {
+  let isCodeGenOnly = 1;
+
   field bits<64> Inst;
   bits<32> literal1;
   bits<32> literal2;
@@ -674,8 +680,14 @@ def ADD : R600_2OP_Helper <0x0, "ADD", fadd>;
 // Non-IEEE MUL: 0 * anything = 0
 def MUL : R600_2OP_Helper <0x1, "MUL NON-IEEE", int_AMDGPU_mul>;
 def MUL_IEEE : R600_2OP_Helper <0x2, "MUL_IEEE", fmul>;
-def MAX : R600_2OP_Helper <0x3, "MAX", AMDGPUfmax>;
-def MIN : R600_2OP_Helper <0x4, "MIN", AMDGPUfmin>;
+// TODO: Do these actually match the regular fmin/fmax behavior?
+def MAX : R600_2OP_Helper <0x3, "MAX", AMDGPUfmax_legacy>;
+def MIN : R600_2OP_Helper <0x4, "MIN", AMDGPUfmin_legacy>;
+// According to https://msdn.microsoft.com/en-us/library/windows/desktop/cc308050%28v=vs.85%29.aspx
+// DX10 min/max returns the other operand if one is NaN,
+// this matches http://llvm.org/docs/LangRef.html#llvm-minnum-intrinsic
+def MAX_DX10 : R600_2OP_Helper <0x5, "MAX_DX10", fmaxnum>;
+def MIN_DX10 : R600_2OP_Helper <0x6, "MIN_DX10", fminnum>;
 
 // For the SET* instructions there is a naming conflict in TargetSelectionDAG.td,
 // so some of the instruction names don't match the asm string.
@@ -697,7 +709,7 @@ def SGE : R600_2OP <
 
 def SNE : R600_2OP <
   0xB, "SETNE",
-  [(set f32:$dst, (selectcc f32:$src0, f32:$src1, FP_ONE, FP_ZERO, COND_UNE))]
+  [(set f32:$dst, (selectcc f32:$src0, f32:$src1, FP_ONE, FP_ZERO, COND_UNE_NE))]
 >;
 
 def SETE_DX10 : R600_2OP <
@@ -715,19 +727,17 @@ def SETGE_DX10 : R600_2OP <
   [(set i32:$dst, (selectcc f32:$src0, f32:$src1, -1, 0, COND_OGE))]
 >;
 
+// FIXME: This should probably be COND_ONE
 def SETNE_DX10 : R600_2OP <
   0xF, "SETNE_DX10",
-  [(set i32:$dst, (selectcc f32:$src0, f32:$src1, -1, 0, COND_UNE))]
+  [(set i32:$dst, (selectcc f32:$src0, f32:$src1, -1, 0, COND_UNE_NE))]
 >;
 
 def FRACT : R600_1OP_Helper <0x10, "FRACT", AMDGPUfract>;
-def TRUNC : R600_1OP_Helper <0x11, "TRUNC", int_AMDGPU_trunc>;
+def TRUNC : R600_1OP_Helper <0x11, "TRUNC", ftrunc>;
 def CEIL : R600_1OP_Helper <0x12, "CEIL", fceil>;
 def RNDNE : R600_1OP_Helper <0x13, "RNDNE", frint>;
 def FLOOR : R600_1OP_Helper <0x14, "FLOOR", ffloor>;
-
-// Add also ftrunc intrinsic pattern
-def : Pat<(ftrunc f32:$src0), (TRUNC $src0)>;
 
 def MOV : R600_1OP <0x19, "MOV", []>;
 
@@ -915,7 +925,12 @@ class MULADD_Common <bits<5> inst> : R600_3OP <
 
 class MULADD_IEEE_Common <bits<5> inst> : R600_3OP <
   inst, "MULADD_IEEE",
-  [(set f32:$dst, (fadd (fmul f32:$src0, f32:$src1), f32:$src2))]
+  [(set f32:$dst, (fmad f32:$src0, f32:$src1, f32:$src2))]
+>;
+
+class FMA_Common <bits<5> inst> : R600_3OP <
+  inst, "FMA",
+  [(set f32:$dst, (fma f32:$src0, f32:$src1, f32:$src2))], VecALU
 >;
 
 class CNDE_Common <bits<5> inst> : R600_3OP <
@@ -1071,7 +1086,7 @@ class RECIP_CLAMPED_Common <bits<11> inst> : R600_1OP <
 }
 
 class RECIP_IEEE_Common <bits<11> inst> : R600_1OP <
-  inst, "RECIP_IEEE", [(set f32:$dst, (fdiv FP_ONE, f32:$src0))]
+  inst, "RECIP_IEEE", [(set f32:$dst, (AMDGPUrcp f32:$src0))]
 > {
   let Itinerary = TransALU;
 }
@@ -1082,17 +1097,20 @@ class RECIP_UINT_Common <bits<11> inst> : R600_1OP_Helper <
   let Itinerary = TransALU;
 }
 
+// Clamped to maximum.
 class RECIPSQRT_CLAMPED_Common <bits<11> inst> : R600_1OP_Helper <
-  inst, "RECIPSQRT_CLAMPED", int_AMDGPU_rsq
+  inst, "RECIPSQRT_CLAMPED", AMDGPUrsq_clamped
 > {
   let Itinerary = TransALU;
 }
 
-class RECIPSQRT_IEEE_Common <bits<11> inst> : R600_1OP <
-  inst, "RECIPSQRT_IEEE", []
+class RECIPSQRT_IEEE_Common <bits<11> inst> : R600_1OP_Helper <
+  inst, "RECIPSQRT_IEEE", AMDGPUrsq_legacy
 > {
   let Itinerary = TransALU;
 }
+
+// TODO: There is also RECIPSQRT_FF which clamps to zero.
 
 class SIN_Common <bits<11> inst> : R600_1OP <
   inst, "SIN", [(set f32:$dst, (SIN_HW f32:$src0))]>{
@@ -1114,6 +1132,7 @@ def FNEG_R600 : FNEG<R600_Reg32>;
 // Helper patterns for complex intrinsics
 //===----------------------------------------------------------------------===//
 
+// FIXME: Should be predicated on unsafe fp math.
 multiclass DIV_Common <InstR600 recip_ieee> {
 def : Pat<
   (int_AMDGPU_div f32:$src0, f32:$src1),
@@ -1124,6 +1143,8 @@ def : Pat<
   (fdiv f32:$src0, f32:$src1),
   (MUL_IEEE $src0, (recip_ieee $src1))
 >;
+
+def : RcpPat<recip_ieee, f32>;
 }
 
 class TGSI_LIT_Z_Common <InstR600 mul_lit, InstR600 log_clamped, InstR600 exp_ieee>
@@ -1131,13 +1152,6 @@ class TGSI_LIT_Z_Common <InstR600 mul_lit, InstR600 log_clamped, InstR600 exp_ie
   (int_TGSI_lit_z f32:$src_x, f32:$src_y, f32:$src_w),
   (exp_ieee (mul_lit (log_clamped (MAX $src_y, (f32 ZERO))), $src_w, $src_x))
 >;
-
-// FROUND pattern
-class FROUNDPat<Instruction CNDGE> : Pat <
-  (AMDGPUround f32:$x),
-  (CNDGE (ADD (FNEG_R600 (f32 HALF)), (FRACT $x)), (CEIL $x), (FLOOR $x))
->;
-
 
 //===----------------------------------------------------------------------===//
 // R600 / R700 Instructions
@@ -1180,7 +1194,7 @@ let Predicates = [isR600] in {
   def TGSI_LIT_Z_r600 : TGSI_LIT_Z_Common<MUL_LIT_r600, LOG_CLAMPED_r600, EXP_IEEE_r600>;
 
   def : Pat<(fsqrt f32:$src), (MUL $src, (RECIPSQRT_CLAMPED_r600 $src))>;
-  def : FROUNDPat <CNDGE_r600>;
+  def : RsqPat<RECIPSQRT_IEEE_r600, f32>;
 
   def R600_ExportSwz : ExportSwzInst {
     let Word1{20-17} = 0; // BURST_COUNT
@@ -1234,6 +1248,7 @@ let Predicates = [isR600] in {
   def CF_PUSH_ELSE_R600 : CF_CLAUSE_R600<12, (ins i32imm:$ADDR),
   "PUSH_ELSE @$ADDR"> {
     let CNT = 0;
+    let POP_COUNT = 0; // FIXME?
   }
   def CF_ELSE_R600 : CF_CLAUSE_R600<13, (ins i32imm:$ADDR, i32imm:$POP_COUNT),
   "ELSE @$ADDR POP:$POP_COUNT"> {
@@ -1264,13 +1279,6 @@ let Predicates = [isR600] in {
 
 defm R600_ : RegisterLoadStore <R600_Reg32, FRAMEri, ADDRIndirect>;
 
-
-//===----------------------------------------------------------------------===//
-// Branch Instructions
-//===----------------------------------------------------------------------===//
-
-def IF_PREDICATE_SET  : ILFormat<(outs), (ins GPRI32:$src),
-  "IF_PREDICATE_SET $src", []>;
 
 //===----------------------------------------------------------------------===//
 // Pseudo instructions
@@ -1345,15 +1353,6 @@ def TXD_SHADOW: InstR600 <
 } // End isPseudo = 1
 } // End usesCustomInserter = 1
 
-//===---------------------------------------------------------------------===//
-// Return instruction
-//===---------------------------------------------------------------------===//
-let isTerminator = 1, isReturn = 1, hasCtrlDep = 1,
-    usesCustomInserter = 1 in {
-  def RETURN          : ILFormat<(outs), (ins variable_ops),
-      "RETURN", [(IL_retflag)]>;
-}
-
 
 //===----------------------------------------------------------------------===//
 // Constant Buffer Addressing Support
@@ -1366,7 +1365,7 @@ def CONST_COPY : Instruction {
   let Pattern =
       [(set R600_Reg32:$dst, (CONST_ADDRESS ADDRGA_CONST_OFFSET:$src))];
   let AsmString = "CONST_COPY";
-  let neverHasSideEffects = 1;
+  let hasSideEffects = 0;
   let isAsCheapAsAMove = 1;
   let Itinerary = NullALU;
 }
@@ -1480,11 +1479,53 @@ let Inst{63-32} = Word1;
   let VTXInst = 1;
 }
 
+//===---------------------------------------------------------------------===//
+// Flow and Program control Instructions
+//===---------------------------------------------------------------------===//
+class ILFormat<dag outs, dag ins, string asmstr, list<dag> pattern>
+: Instruction {
 
+     let Namespace = "AMDGPU";
+     dag OutOperandList = outs;
+     dag InOperandList = ins;
+     let Pattern = pattern;
+     let AsmString = !strconcat(asmstr, "\n");
+     let isPseudo = 1;
+     let Itinerary = NullALU;
+     bit hasIEEEFlag = 0;
+     bit hasZeroOpFlag = 0;
+     let mayLoad = 0;
+     let mayStore = 0;
+     let hasSideEffects = 0;
+     let isCodeGenOnly = 1;
+}
 
-//===--------------------------------------------------------------------===//
-// Instructions support
-//===--------------------------------------------------------------------===//
+multiclass BranchConditional<SDNode Op, RegisterClass rci, RegisterClass rcf> {
+    def _i32 : ILFormat<(outs),
+  (ins brtarget:$target, rci:$src0),
+        "; i32 Pseudo branch instruction",
+  [(Op bb:$target, (i32 rci:$src0))]>;
+    def _f32 : ILFormat<(outs),
+  (ins brtarget:$target, rcf:$src0),
+        "; f32 Pseudo branch instruction",
+  [(Op bb:$target, (f32 rcf:$src0))]>;
+}
+
+// Only scalar types should generate flow control
+multiclass BranchInstr<string name> {
+  def _i32 : ILFormat<(outs), (ins R600_Reg32:$src),
+      !strconcat(name, " $src"), []>;
+  def _f32 : ILFormat<(outs), (ins R600_Reg32:$src),
+      !strconcat(name, " $src"), []>;
+}
+// Only scalar types should generate flow control
+multiclass BranchInstr2<string name> {
+  def _i32 : ILFormat<(outs), (ins R600_Reg32:$src0, R600_Reg32:$src1),
+      !strconcat(name, " $src0, $src1"), []>;
+  def _f32 : ILFormat<(outs), (ins R600_Reg32:$src0, R600_Reg32:$src1),
+      !strconcat(name, " $src0, $src1"), []>;
+}
+
 //===---------------------------------------------------------------------===//
 // Custom Inserter for Branches and returns, this eventually will be a
 // separate pass
@@ -1497,13 +1538,22 @@ let isTerminator = 1, usesCustomInserter = 1, isBranch = 1, isBarrier = 1 in {
 }
 
 //===---------------------------------------------------------------------===//
-// Flow and Program control Instructions
+// Return instruction
 //===---------------------------------------------------------------------===//
+let isTerminator = 1, isReturn = 1, hasCtrlDep = 1,
+    usesCustomInserter = 1 in {
+  def RETURN          : ILFormat<(outs), (ins variable_ops),
+      "RETURN", [(IL_retflag)]>;
+}
+
+//===----------------------------------------------------------------------===//
+// Branch Instructions
+//===----------------------------------------------------------------------===//
+
+def IF_PREDICATE_SET  : ILFormat<(outs), (ins R600_Reg32:$src),
+  "IF_PREDICATE_SET $src", []>;
+
 let isTerminator=1 in {
-  def SWITCH      : ILFormat< (outs), (ins GPRI32:$src),
-  !strconcat("SWITCH", " $src"), []>;
-  def CASE        : ILFormat< (outs), (ins GPRI32:$src),
-      !strconcat("CASE", " $src"), []>;
   def BREAK       : ILFormat< (outs), (ins),
       "BREAK", []>;
   def CONTINUE    : ILFormat< (outs), (ins),
@@ -1546,6 +1596,60 @@ let isTerminator=1 in {
   defm BREAKC      : BranchInstr2<"BREAKC">;
   defm CONTINUEC   : BranchInstr2<"CONTINUEC">;
 }
+
+//===----------------------------------------------------------------------===//
+// Indirect addressing pseudo instructions
+//===----------------------------------------------------------------------===//
+
+let isPseudo = 1 in {
+
+class ExtractVertical <RegisterClass vec_rc> : InstR600 <
+  (outs R600_Reg32:$dst),
+  (ins vec_rc:$vec, R600_Reg32:$index), "",
+  [],
+  AnyALU
+>;
+
+let Constraints = "$dst = $vec" in {
+
+class InsertVertical <RegisterClass vec_rc> : InstR600 <
+  (outs vec_rc:$dst),
+  (ins vec_rc:$vec, R600_Reg32:$value, R600_Reg32:$index), "",
+  [],
+  AnyALU
+>;
+
+} // End Constraints = "$dst = $vec"
+
+} // End isPseudo = 1
+
+def R600_EXTRACT_ELT_V2 : ExtractVertical <R600_Reg64Vertical>;
+def R600_EXTRACT_ELT_V4 : ExtractVertical <R600_Reg128Vertical>;
+
+def R600_INSERT_ELT_V2 : InsertVertical <R600_Reg64Vertical>;
+def R600_INSERT_ELT_V4 : InsertVertical <R600_Reg128Vertical>;
+
+class ExtractVerticalPat <Instruction inst, ValueType vec_ty,
+                          ValueType scalar_ty> : Pat <
+  (scalar_ty (extractelt vec_ty:$vec, i32:$index)),
+  (inst $vec, $index)
+>;
+
+def : ExtractVerticalPat <R600_EXTRACT_ELT_V2, v2i32, i32>;
+def : ExtractVerticalPat <R600_EXTRACT_ELT_V2, v2f32, f32>;
+def : ExtractVerticalPat <R600_EXTRACT_ELT_V4, v4i32, i32>;
+def : ExtractVerticalPat <R600_EXTRACT_ELT_V4, v4f32, f32>;
+
+class InsertVerticalPat <Instruction inst, ValueType vec_ty,
+                         ValueType scalar_ty> : Pat <
+  (vec_ty (insertelt vec_ty:$vec, scalar_ty:$value, i32:$index)),
+  (inst $vec, $value, $index)
+>;
+
+def : InsertVerticalPat <R600_INSERT_ELT_V2, v2i32, i32>;
+def : InsertVerticalPat <R600_INSERT_ELT_V2, v2f32, f32>;
+def : InsertVerticalPat <R600_INSERT_ELT_V4, v4i32, i32>;
+def : InsertVerticalPat <R600_INSERT_ELT_V4, v4f32, f32>;
 
 //===----------------------------------------------------------------------===//
 // ISel Patterns
@@ -1624,6 +1728,12 @@ def : BitConvert <v4i32, v4f32, R600_Reg128>;
 def : DwordAddrPat  <i32, R600_Reg32>;
 
 } // End isR600toCayman Predicate
+
+let Predicates = [isR600] in {
+// Intrinsic patterns
+defm : Expand24IBitOps<MULLO_INT_r600, ADD_INT>;
+defm : Expand24UBitOps<MULLO_UINT_r600, ADD_INT>;
+} // End isR600
 
 def getLDSNoRetOp : InstrMapping {
   let FilterClass = "R600_LDS_1A1D";

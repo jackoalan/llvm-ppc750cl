@@ -40,11 +40,12 @@ StringRef getELFRelocationTypeName(uint32_t Machine, uint32_t Type);
 
 // Subclasses of ELFFile may need this for template instantiation
 inline std::pair<unsigned char, unsigned char>
-getElfArchType(MemoryBuffer *Object) {
-  if (Object->getBufferSize() < ELF::EI_NIDENT)
-    return std::make_pair((uint8_t)ELF::ELFCLASSNONE,(uint8_t)ELF::ELFDATANONE);
-  return std::make_pair((uint8_t) Object->getBufferStart()[ELF::EI_CLASS],
-                        (uint8_t) Object->getBufferStart()[ELF::EI_DATA]);
+getElfArchType(StringRef Object) {
+  if (Object.size() < ELF::EI_NIDENT)
+    return std::make_pair((uint8_t)ELF::ELFCLASSNONE,
+                          (uint8_t)ELF::ELFDATANONE);
+  return std::make_pair((uint8_t)Object[ELF::EI_CLASS],
+                        (uint8_t)Object[ELF::EI_DATA]);
 }
 
 template <class ELFT>
@@ -93,16 +94,22 @@ public:
       return *this;
     }
 
+    ELFEntityIterator &operator+(difference_type n) {
+      assert(Current && "Attempted to increment an invalid iterator!");
+      Current += (n * EntitySize);
+      return *this;
+    }
+
+    ELFEntityIterator &operator-(difference_type n) {
+      assert(Current && "Attempted to subtract an invalid iterator!");
+      Current -= (n * EntitySize);
+      return *this;
+    }
+
     ELFEntityIterator operator ++(int) {
       ELFEntityIterator Tmp = *this;
       ++*this;
       return Tmp;
-    }
-
-    ELFEntityIterator &operator =(const ELFEntityIterator &Other) {
-      EntitySize = Other.EntitySize;
-      Current = Other.Current;
-      return *this;
     }
 
     difference_type operator -(const ELFEntityIterator &Other) const {
@@ -133,9 +140,11 @@ public:
   typedef Elf_Vernaux_Impl<ELFT> Elf_Vernaux;
   typedef Elf_Versym_Impl<ELFT> Elf_Versym;
   typedef ELFEntityIterator<const Elf_Dyn> Elf_Dyn_Iter;
+  typedef iterator_range<Elf_Dyn_Iter> Elf_Dyn_Range;
   typedef ELFEntityIterator<const Elf_Rela> Elf_Rela_Iter;
   typedef ELFEntityIterator<const Elf_Rel> Elf_Rel_Iter;
   typedef ELFEntityIterator<const Elf_Shdr> Elf_Shdr_Iter;
+  typedef iterator_range<Elf_Shdr_Iter> Elf_Shdr_Range;
 
   /// \brief Archive files are 2 byte aligned, so we need this for
   ///     PointerIntPair to work.
@@ -200,12 +209,6 @@ public:
       return *this;
     }
 
-    Elf_Sym_Iter &operator=(const Elf_Sym_Iter &Other) {
-      EntitySize = Other.EntitySize;
-      Current = Other.Current;
-      return *this;
-    }
-
     difference_type operator-(const Elf_Sym_Iter &Other) const {
       assert(EntitySize == Other.EntitySize &&
              "Subtracting iterators of different EntitySize!");
@@ -228,10 +231,10 @@ private:
   typedef SmallVector<const Elf_Shdr *, 2> Sections_t;
   typedef DenseMap<unsigned, unsigned> IndexMap_t;
 
-  MemoryBuffer *Buf;
+  StringRef Buf;
 
   const uint8_t *base() const {
-    return reinterpret_cast<const uint8_t *>(Buf->getBufferStart());
+    return reinterpret_cast<const uint8_t *>(Buf.data());
   }
 
   const Elf_Ehdr *Header;
@@ -315,7 +318,12 @@ public:
   std::pair<const Elf_Shdr *, const Elf_Sym *>
   getRelocationSymbol(const Elf_Shdr *RelSec, const RelT *Rel) const;
 
-  ELFFile(MemoryBuffer *Object, error_code &ec);
+  ELFFile(StringRef Object, std::error_code &ec);
+
+  bool isMipsELF64() const {
+    return Header->e_machine == ELF::EM_MIPS &&
+      Header->getFileClass() == ELF::ELFCLASS64;
+  }
 
   bool isMips64EL() const {
     return Header->e_machine == ELF::EM_MIPS &&
@@ -325,6 +333,9 @@ public:
 
   Elf_Shdr_Iter begin_sections() const;
   Elf_Shdr_Iter end_sections() const;
+  Elf_Shdr_Range sections() const {
+    return make_range(begin_sections(), end_sections());
+  }
 
   Elf_Sym_Iter begin_symbols() const;
   Elf_Sym_Iter end_symbols() const;
@@ -333,6 +344,9 @@ public:
   /// \param NULLEnd use one past the first DT_NULL entry as the end instead of
   /// the section size.
   Elf_Dyn_Iter end_dynamic_table(bool NULLEnd = false) const;
+  Elf_Dyn_Range dynamic_table(bool NULLEnd = false) const {
+    return make_range(begin_dynamic_table(), end_dynamic_table(NULLEnd));
+  }
 
   Elf_Sym_Iter begin_dynamic_symbols() const {
     if (DynSymRegion.Addr)
@@ -523,10 +537,10 @@ ELFFile<ELFT>::getSymbol(uint32_t Index) const {
 template <class ELFT>
 ErrorOr<ArrayRef<uint8_t> >
 ELFFile<ELFT>::getSectionContents(const Elf_Shdr *Sec) const {
-  if (Sec->sh_offset + Sec->sh_size > Buf->getBufferSize())
+  if (Sec->sh_offset + Sec->sh_size > Buf.size())
     return object_error::parse_failed;
   const uint8_t *Start = base() + Sec->sh_offset;
-  return ArrayRef<uint8_t>(Start, Sec->sh_size);
+  return makeArrayRef(Start, Sec->sh_size);
 }
 
 template <class ELFT>
@@ -537,10 +551,16 @@ StringRef ELFFile<ELFT>::getRelocationTypeName(uint32_t Type) const {
 template <class ELFT>
 void ELFFile<ELFT>::getRelocationTypeName(uint32_t Type,
                                           SmallVectorImpl<char> &Result) const {
-  if (!isMips64EL()) {
+  if (!isMipsELF64()) {
     StringRef Name = getRelocationTypeName(Type);
     Result.append(Name.begin(), Name.end());
   } else {
+    // The Mips N64 ABI allows up to three operations to be specified per
+    // relocation record. Unfortunately there's no easy way to test for the
+    // presence of N64 ELFs as they have no special flag that identifies them
+    // as being N64. We can safely assume at the moment that all Mips
+    // ELFCLASS64 ELFs are N64. New Mips64 ABIs should provide enough
+    // information to disambiguate between old vs new ABIs.
     uint8_t Type1 = (Type >> 0) & 0xFF;
     uint8_t Type2 = (Type >> 8) & 0xFF;
     uint8_t Type3 = (Type >> 16) & 0xFF;
@@ -583,7 +603,7 @@ void ELFFile<ELFT>::VerifyStrTab(const Elf_Shdr *sh) const {
 template <class ELFT>
 uint64_t ELFFile<ELFT>::getNumSections() const {
   assert(Header && "Header not initialized!");
-  if (Header->e_shnum == ELF::SHN_UNDEF) {
+  if (Header->e_shnum == ELF::SHN_UNDEF && Header->e_shoff > 0) {
     assert(SectionHeaderTable && "SectionHeaderTable not initialized!");
     return SectionHeaderTable->sh_size;
   }
@@ -602,18 +622,13 @@ typename ELFFile<ELFT>::uintX_t ELFFile<ELFT>::getStringTableIndex() const {
 }
 
 template <class ELFT>
-ELFFile<ELFT>::ELFFile(MemoryBuffer *Object, error_code &ec)
-    : Buf(Object),
-      SectionHeaderTable(nullptr),
-      dot_shstrtab_sec(nullptr),
-      dot_strtab_sec(nullptr),
-      dot_symtab_sec(nullptr),
-      SymbolTableSectionHeaderIndex(nullptr),
-      dot_gnu_version_sec(nullptr),
-      dot_gnu_version_r_sec(nullptr),
-      dot_gnu_version_d_sec(nullptr),
+ELFFile<ELFT>::ELFFile(StringRef Object, std::error_code &ec)
+    : Buf(Object), SectionHeaderTable(nullptr), dot_shstrtab_sec(nullptr),
+      dot_strtab_sec(nullptr), dot_symtab_sec(nullptr),
+      SymbolTableSectionHeaderIndex(nullptr), dot_gnu_version_sec(nullptr),
+      dot_gnu_version_r_sec(nullptr), dot_gnu_version_d_sec(nullptr),
       dt_soname(nullptr) {
-  const uint64_t FileSize = Buf->getBufferSize();
+  const uint64_t FileSize = Buf.size();
 
   if (sizeof(Elf_Ehdr) > FileSize)
     // FIXME: Proper error handling.
@@ -641,30 +656,29 @@ ELFFile<ELFT>::ELFFile(MemoryBuffer *Object, error_code &ec)
 
   // Scan sections for special sections.
 
-  for (Elf_Shdr_Iter SecI = begin_sections(), SecE = end_sections();
-       SecI != SecE; ++SecI) {
-    switch (SecI->sh_type) {
+  for (const Elf_Shdr &Sec : sections()) {
+    switch (Sec.sh_type) {
     case ELF::SHT_SYMTAB_SHNDX:
       if (SymbolTableSectionHeaderIndex)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .symtab_shndx!");
-      SymbolTableSectionHeaderIndex = &*SecI;
+      SymbolTableSectionHeaderIndex = &Sec;
       break;
     case ELF::SHT_SYMTAB:
       if (dot_symtab_sec)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .symtab!");
-      dot_symtab_sec = &*SecI;
-      dot_strtab_sec = getSection(SecI->sh_link);
+      dot_symtab_sec = &Sec;
+      dot_strtab_sec = getSection(Sec.sh_link);
       break;
     case ELF::SHT_DYNSYM: {
       if (DynSymRegion.Addr)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .dynsym!");
-      DynSymRegion.Addr = base() + SecI->sh_offset;
-      DynSymRegion.Size = SecI->sh_size;
-      DynSymRegion.EntSize = SecI->sh_entsize;
-      const Elf_Shdr *DynStr = getSection(SecI->sh_link);
+      DynSymRegion.Addr = base() + Sec.sh_offset;
+      DynSymRegion.Size = Sec.sh_size;
+      DynSymRegion.EntSize = Sec.sh_entsize;
+      const Elf_Shdr *DynStr = getSection(Sec.sh_link);
       DynStrRegion.Addr = base() + DynStr->sh_offset;
       DynStrRegion.Size = DynStr->sh_size;
       DynStrRegion.EntSize = DynStr->sh_entsize;
@@ -674,27 +688,27 @@ ELFFile<ELFT>::ELFFile(MemoryBuffer *Object, error_code &ec)
       if (DynamicRegion.Addr)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .dynamic!");
-      DynamicRegion.Addr = base() + SecI->sh_offset;
-      DynamicRegion.Size = SecI->sh_size;
-      DynamicRegion.EntSize = SecI->sh_entsize;
+      DynamicRegion.Addr = base() + Sec.sh_offset;
+      DynamicRegion.Size = Sec.sh_size;
+      DynamicRegion.EntSize = Sec.sh_entsize;
       break;
     case ELF::SHT_GNU_versym:
       if (dot_gnu_version_sec != nullptr)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .gnu.version section!");
-      dot_gnu_version_sec = &*SecI;
+      dot_gnu_version_sec = &Sec;
       break;
     case ELF::SHT_GNU_verdef:
       if (dot_gnu_version_d_sec != nullptr)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .gnu.version_d section!");
-      dot_gnu_version_d_sec = &*SecI;
+      dot_gnu_version_d_sec = &Sec;
       break;
     case ELF::SHT_GNU_verneed:
       if (dot_gnu_version_r_sec != nullptr)
         // FIXME: Proper error handling.
         report_fatal_error("More than one .gnu.version_r section!");
-      dot_gnu_version_r_sec = &*SecI;
+      dot_gnu_version_r_sec = &Sec;
       break;
     }
   }
@@ -730,7 +744,7 @@ ELFFile<ELFT>::ELFFile(MemoryBuffer *Object, error_code &ec)
     }
   }
 
-  ec = error_code::success();
+  ec = std::error_code();
 }
 
 // Get the symbol table index in the symtab section given a symbol
@@ -809,17 +823,13 @@ ELFFile<ELFT>::end_dynamic_table(bool NULLEnd) const {
 template <class ELFT>
 StringRef ELFFile<ELFT>::getLoadName() const {
   if (!dt_soname) {
+    dt_soname = "";
     // Find the DT_SONAME entry
-    Elf_Dyn_Iter it = begin_dynamic_table();
-    Elf_Dyn_Iter ie = end_dynamic_table();
-    while (it != ie && it->getTag() != ELF::DT_SONAME)
-      ++it;
-
-    if (it != ie) {
-      dt_soname = getDynamicString(it->getVal());
-    } else {
-      dt_soname = "";
-    }
+    for (const auto &Entry : dynamic_table())
+      if (Entry.getTag() == ELF::DT_SONAME) {
+        dt_soname = getDynamicString(Entry.getVal());
+        break;
+      }
   }
   return dt_soname;
 }

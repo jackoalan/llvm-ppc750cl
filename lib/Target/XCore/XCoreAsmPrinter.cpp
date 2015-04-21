@@ -50,16 +50,15 @@ using namespace llvm;
 
 namespace {
   class XCoreAsmPrinter : public AsmPrinter {
-    const XCoreSubtarget &Subtarget;
     XCoreMCInstLower MCInstLowering;
     XCoreTargetStreamer &getTargetStreamer();
 
   public:
-    explicit XCoreAsmPrinter(TargetMachine &TM, MCStreamer &Streamer)
-      : AsmPrinter(TM, Streamer), Subtarget(TM.getSubtarget<XCoreSubtarget>()),
-        MCInstLowering(*this) {}
+    explicit XCoreAsmPrinter(TargetMachine &TM,
+                             std::unique_ptr<MCStreamer> Streamer)
+        : AsmPrinter(TM, std::move(Streamer)), MCInstLowering(*this) {}
 
-    virtual const char *getPassName() const {
+    const char *getPassName() const override {
       return "XCore Assembly Printer";
     }
 
@@ -71,18 +70,18 @@ namespace {
     void printOperand(const MachineInstr *MI, int opNum, raw_ostream &O);
     bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
                          unsigned AsmVariant, const char *ExtraCode,
-                         raw_ostream &O);
+                         raw_ostream &O) override;
     bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNum,
                                unsigned AsmVariant, const char *ExtraCode,
                                raw_ostream &O) override;
 
     void emitArrayBound(MCSymbol *Sym, const GlobalVariable *GV);
-    virtual void EmitGlobalVariable(const GlobalVariable *GV);
+    void EmitGlobalVariable(const GlobalVariable *GV) override;
 
-    void EmitFunctionEntryLabel();
-    void EmitInstruction(const MachineInstr *MI);
-    void EmitFunctionBodyStart();
-    void EmitFunctionBodyEnd();
+    void EmitFunctionEntryLabel() override;
+    void EmitInstruction(const MachineInstr *MI) override;
+    void EmitFunctionBodyStart() override;
+    void EmitFunctionBodyEnd() override;
   };
 } // end of anonymous namespace
 
@@ -105,7 +104,6 @@ void XCoreAsmPrinter::emitArrayBound(MCSymbol *Sym, const GlobalVariable *GV) {
                                                       OutContext));
     if (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage() ||
         GV->hasCommonLinkage()) {
-      // TODO Use COMDAT groups for LinkOnceLinkage
       OutStreamer.EmitSymbolAttribute(SymGlob, MCSA_Weak);
     }
   }
@@ -140,7 +138,6 @@ void XCoreAsmPrinter::EmitGlobalVariable(const GlobalVariable *GV) {
     emitArrayBound(GVSym, GV);
     OutStreamer.EmitSymbolAttribute(GVSym, MCSA_Global);
 
-    // TODO Use COMDAT groups for LinkOnceLinkage
     if (GV->hasWeakLinkage() || GV->hasLinkOnceLinkage() ||
         GV->hasCommonLinkage())
       OutStreamer.EmitSymbolAttribute(GVSym, MCSA_Weak);

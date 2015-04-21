@@ -14,6 +14,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "AMDGPU.h"
+#include "AMDGPUSubtarget.h"
 #include "R600Defines.h"
 #include "R600InstrInfo.h"
 #include "R600MachineFunctionInfo.h"
@@ -63,9 +64,9 @@ private:
 public:
   R600ClauseMergePass(TargetMachine &tm) : MachineFunctionPass(ID) { }
 
-  virtual bool runOnMachineFunction(MachineFunction &MF);
+  bool runOnMachineFunction(MachineFunction &MF) override;
 
-  const char *getPassName() const;
+  const char *getPassName() const override;
 };
 
 char R600ClauseMergePass::ID = 0;
@@ -167,7 +168,7 @@ bool R600ClauseMergePass::mergeIfPossible(MachineInstr *RootCFAlu,
 }
 
 bool R600ClauseMergePass::runOnMachineFunction(MachineFunction &MF) {
-  TII = static_cast<const R600InstrInfo *>(MF.getTarget().getInstrInfo());
+  TII = static_cast<const R600InstrInfo *>(MF.getSubtarget().getInstrInfo());
   for (MachineFunction::iterator BB = MF.begin(), BB_E = MF.end();
                                                   BB != BB_E; ++BB) {
     MachineBasicBlock &MBB = *BB;

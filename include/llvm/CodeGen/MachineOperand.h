@@ -42,7 +42,7 @@ class MCSymbol;
 ///
 class MachineOperand {
 public:
-  enum MachineOperandType {
+  enum MachineOperandType : unsigned char {
     MO_Register,          ///< Register operand.
     MO_Immediate,         ///< Immediate operand
     MO_CImmediate,        ///< Immediate >64bit operand
@@ -65,7 +65,7 @@ public:
 private:
   /// OpKind - Specify what kind of operand this is.  This discriminates the
   /// union.
-  unsigned char OpKind; // MachineOperandType
+  MachineOperandType OpKind;
 
   /// Subregister number for MO_Register.  A value of 0 indicates the
   /// MO_Register has no subReg.
@@ -217,7 +217,7 @@ public:
   ///
   void clearParent() { ParentMI = nullptr; }
 
-  void print(raw_ostream &os, const TargetMachine *TM = nullptr) const;
+  void print(raw_ostream &os, const TargetRegisterInfo *TRI = nullptr) const;
 
   //===--------------------------------------------------------------------===//
   // Accessors that tell you what kind of MachineOperand you're looking at.
@@ -227,7 +227,7 @@ public:
   bool isReg() const { return OpKind == MO_Register; }
   /// isImm - Tests if this is a MO_Immediate operand.
   bool isImm() const { return OpKind == MO_Immediate; }
-  /// isCImm - Test if t his is a MO_CImmediate operand.
+  /// isCImm - Test if this is a MO_CImmediate operand.
   bool isCImm() const { return OpKind == MO_CImmediate; }
   /// isFPImm - Tests if this is a MO_FPImmediate operand.
   bool isFPImm() const { return OpKind == MO_FPImmediate; }
@@ -506,6 +506,11 @@ public:
     Contents.ImmVal = immVal;
   }
 
+  void setFPImm(const ConstantFP *CFP) {
+    assert(isFPImm() && "Wrong MachineOperand mutator");
+    Contents.CFP = CFP;
+  }
+
   void setOffset(int64_t Offset) {
     assert((isGlobal() || isSymbol() || isCPI() || isTargetIndex() ||
             isBlockAddress()) && "Wrong MachineOperand accessor");
@@ -543,6 +548,11 @@ public:
   /// the specified value.  If an operand is known to be an immediate already,
   /// the setImm method should be used.
   void ChangeToImmediate(int64_t ImmVal);
+
+  /// ChangeToFPImmediate - Replace this operand with a new FP immediate operand
+  /// of the specified value.  If an operand is known to be an FP immediate
+  /// already, the setFPImm method should be used.
+  void ChangeToFPImmediate(const ConstantFP *FPImm);
 
   /// ChangeToRegister - Replace this operand with a new register operand of
   /// the specified value.  If an operand is known to be an register already,
@@ -702,6 +712,8 @@ public:
   friend class MachineInstr;
   friend class MachineRegisterInfo;
 private:
+  void removeRegFromUses();
+
   //===--------------------------------------------------------------------===//
   // Methods for handling register use/def lists.
   //===--------------------------------------------------------------------===//

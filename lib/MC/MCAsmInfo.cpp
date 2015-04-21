@@ -32,15 +32,16 @@ MCAsmInfo::MCAsmInfo() {
   HasMachoZeroFillDirective = false;
   HasMachoTBSSDirective = false;
   HasStaticCtorDtorReferenceInStaticMode = false;
-  LinkerRequiresNonEmptyDwarfLines = false;
   MaxInstLength = 4;
   MinInstAlignment = 1;
   DollarIsPC = false;
   SeparatorString = ";";
   CommentString = "#";
   LabelSuffix = ":";
-  DebugLabelSuffix = ":";
+  UseAssignmentForEHBegin = false;
+  NeedsLocalForSize = false;
   PrivateGlobalPrefix = "L";
+  PrivateLabelPrefix = PrivateGlobalPrefix;
   LinkerPrivateGlobalPrefix = "";
   InlineAsmStart = "APP";
   InlineAsmEnd = "NO_APP";
@@ -64,14 +65,16 @@ MCAsmInfo::MCAsmInfo() {
   GPRel64Directive = nullptr;
   GPRel32Directive = nullptr;
   GlobalDirective = "\t.globl\t";
-  HasSetDirective = true;
+  SetDirectiveSuppressesReloc = false;
   HasAggressiveSymbolFolding = true;
   COMMDirectiveAlignmentIsInBytes = true;
   LCOMMDirectiveAlignmentType = LCOMM::NoAlignment;
+  HasFunctionAlignment = true;
   HasDotTypeDotSizeDirective = true;
   HasSingleParameterDotFile = true;
   HasIdentDirective = false;
   HasNoDeadStrip = false;
+  WeakDirective = "\t.weak\t";
   WeakRefDirective = nullptr;
   HasWeakDefDirective = false;
   HasWeakDefCanBeHiddenDirective = false;
@@ -79,9 +82,9 @@ MCAsmInfo::MCAsmInfo() {
   HiddenVisibilityAttr = MCSA_Hidden;
   HiddenDeclarationVisibilityAttr = MCSA_Hidden;
   ProtectedVisibilityAttr = MCSA_Protected;
-  HasLEB128 = false;
   SupportsDebugInformation = false;
   ExceptionsType = ExceptionHandling::None;
+  WinEHEncodingType = WinEH::EncodingType::Invalid;
   DwarfUsesRelocationsAcrossSections = true;
   DwarfFDESymbolsUseAbsDiff = false;
   DwarfRegNumForCFI = false;
@@ -99,13 +102,17 @@ MCAsmInfo::MCAsmInfo() {
   //   - MCAsmInfoDarwin is handling this case
   // - Generic_GCC toolchains enable the integrated assembler on a per
   //   architecture basis.
-  //   - The target subclasses for AArch64, ARM, and X86  handle these cases
+  //   - The target subclasses for AArch64, ARM, and X86 handle these cases
   UseIntegratedAssembler = false;
 
   CompressDebugSections = false;
 }
 
 MCAsmInfo::~MCAsmInfo() {
+}
+
+bool MCAsmInfo::isSectionAtomizableBySymbols(const MCSection &Section) const {
+  return false;
 }
 
 const MCExpr *

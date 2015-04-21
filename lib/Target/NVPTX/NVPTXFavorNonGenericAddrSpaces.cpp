@@ -63,7 +63,7 @@ public:
   static char ID;
   NVPTXFavorNonGenericAddrSpaces() : FunctionPass(ID) {}
 
-  virtual bool runOnFunction(Function &F) override;
+  bool runOnFunction(Function &F) override;
 
   /// Optimizes load/store instructions. Idx is the index of the pointer operand
   /// (0 for load, and 1 for store). Returns true if it changes anything.
@@ -123,19 +123,17 @@ bool NVPTXFavorNonGenericAddrSpaces::hoistAddrSpaceCastFromGEP(
     // =>
     // %0 = gep X, indices
     // %1 = addrspacecast %0
-    GetElementPtrInst *NewGEPI = GetElementPtrInst::Create(Cast->getOperand(0),
-                                                           Indices,
-                                                           GEP->getName(),
-                                                           GEPI);
+    GetElementPtrInst *NewGEPI = GetElementPtrInst::Create(
+        GEP->getSourceElementType(), Cast->getOperand(0), Indices,
+        GEP->getName(), GEPI);
     NewGEPI->setIsInBounds(GEP->isInBounds());
     GEP->replaceAllUsesWith(
         new AddrSpaceCastInst(NewGEPI, GEP->getType(), "", GEPI));
   } else {
     // GEP is a constant expression.
     Constant *NewGEPCE = ConstantExpr::getGetElementPtr(
-        cast<Constant>(Cast->getOperand(0)),
-        Indices,
-        GEP->isInBounds());
+        GEP->getSourceElementType(), cast<Constant>(Cast->getOperand(0)),
+        Indices, GEP->isInBounds());
     GEP->replaceAllUsesWith(
         ConstantExpr::getAddrSpaceCast(NewGEPCE, GEP->getType()));
   }

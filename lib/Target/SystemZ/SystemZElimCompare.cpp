@@ -47,7 +47,7 @@ struct Reference {
     return *this;
   }
 
-  operator bool() const { return Def || Use; }
+  explicit operator bool() const { return Def || Use; }
 
   // True if the register is defined or used in some form, either directly or
   // via a sub- or super-register.
@@ -71,7 +71,7 @@ public:
   }
 
   bool processBlock(MachineBasicBlock &MBB);
-  bool runOnMachineFunction(MachineFunction &F);
+  bool runOnMachineFunction(MachineFunction &F) override;
 
 private:
   Reference getRegReferences(MachineInstr *MI, unsigned Reg);
@@ -458,7 +458,7 @@ bool SystemZElimCompare::processBlock(MachineBasicBlock &MBB) {
 }
 
 bool SystemZElimCompare::runOnMachineFunction(MachineFunction &F) {
-  TII = static_cast<const SystemZInstrInfo *>(F.getTarget().getInstrInfo());
+  TII = static_cast<const SystemZInstrInfo *>(F.getSubtarget().getInstrInfo());
   TRI = &TII->getRegisterInfo();
 
   bool Changed = false;

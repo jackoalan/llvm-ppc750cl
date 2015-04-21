@@ -12,8 +12,8 @@ entry:
 ; Mass = 1
 ; Backedge mass = 1/3, exit mass = 2/3
 ; Loop scale = 3/2
-; Psuedo-edges = exit
-; Psuedo-mass = 1
+; Pseudo-edges = exit
+; Pseudo-mass = 1
 ; Frequency = 1*3/2*1 = 3/2
 ; CHECK-NEXT: outer: float = 1.5,
 outer:
@@ -66,9 +66,9 @@ exit:
   ret i32 %Return.2
 }
 
-!0 = metadata !{metadata !"branch_weights", i32 1, i32 3}
-!1 = metadata !{metadata !"branch_weights", i32 4, i32 1}
-!2 = metadata !{metadata !"branch_weights", i32 2, i32 1}
+!0 = !{!"branch_weights", i32 1, i32 3}
+!1 = !{!"branch_weights", i32 4, i32 1}
+!2 = !{!"branch_weights", i32 2, i32 1}
 
 declare i32 @c2(i32, i32)
 declare i32 @logic2(i32, i32, i32)
@@ -86,7 +86,7 @@ entry:
 ; Backedge mass = 1/2, exit mass = 1/2
 ; Loop scale = 2
 ; Pseudo-edges = exit
-; Psuedo-mass = 1
+; Pseudo-mass = 1
 ; Frequency = 1*2*1 = 2
 ; CHECK-NEXT: outer: float = 2.0,
 outer:
@@ -98,8 +98,8 @@ outer:
 ; Mass = 1
 ; Backedge mass = 1/3, exit mass = 2/3
 ; Loop scale = 3/2
-; Psuedo-edges = outer.inc
-; Psuedo-mass = 1/2
+; Pseudo-edges = outer.inc
+; Pseudo-mass = 1/2
 ; Frequency = 2*1*3/2*1/2 = 3/2
 ; CHECK-NEXT: middle: float = 1.5,
 middle:
@@ -159,7 +159,7 @@ exit:
   ret i32 %Return.0
 }
 
-!3 = metadata !{metadata !"branch_weights", i32 1, i32 1}
+!3 = !{!"branch_weights", i32 1, i32 1}
 
 declare i32 @c3(i32, i32, i32)
 declare i32 @logic3(i32, i32, i32, i32)

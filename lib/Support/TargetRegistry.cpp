@@ -10,7 +10,6 @@
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Host.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <vector>
@@ -114,17 +113,6 @@ void TargetRegistry::RegisterTarget(Target &T,
   T.ShortDesc = ShortDesc;
   T.ArchMatchFn = ArchMatchFn;
   T.HasJIT = HasJIT;
-}
-
-const Target *TargetRegistry::getClosestTargetForJIT(std::string &Error) {
-  const Target *TheTarget = lookupTarget(sys::getDefaultTargetTriple(), Error);
-
-  if (TheTarget && !TheTarget->hasJIT()) {
-    Error = "No JIT compatible target available for this host";
-    return nullptr;
-  }
-
-  return TheTarget;
 }
 
 static int TargetArraySortFn(const std::pair<StringRef, const Target *> *LHS,

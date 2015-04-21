@@ -26,7 +26,7 @@ define void @mismatched_intty(i32) {
 declare void @mismatched_vararg_callee(i8*, ...)
 define void @mismatched_vararg(i8*) {
 ; CHECK: mismatched varargs
-  musttail call void (i8*, ...)* @mismatched_vararg_callee(i8* null)
+  musttail call void (i8*, ...) @mismatched_vararg_callee(i8* null)
   ret void
 }
 
@@ -57,6 +57,13 @@ declare void @mismatched_sret_callee(i32* sret)
 define void @mismatched_sret(i32* %a) {
 ; CHECK: mismatched ABI impacting function attributes
   musttail call void @mismatched_sret_callee(i32* sret %a)
+  ret void
+}
+
+declare void @mismatched_alignment_callee(i32* byval align 8)
+define void @mismatched_alignment(i32* byval align 4 %a) {
+; CHECK: mismatched ABI impacting function attributes
+  musttail call void @mismatched_alignment_callee(i32* byval align 8 %a)
   ret void
 }
 

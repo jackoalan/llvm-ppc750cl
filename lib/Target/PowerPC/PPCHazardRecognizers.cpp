@@ -160,9 +160,10 @@ unsigned PPCDispatchGroupSBHazardRecognizer::PreEmitNoops(SUnit *SU) {
   // new group.
   if (isLoadAfterStore(SU) && CurSlots < 6) {
     unsigned Directive =
-      DAG->TM.getSubtarget<PPCSubtarget>().getDarwinDirective();
+        DAG->MF.getSubtarget<PPCSubtarget>().getDarwinDirective();
     // If we're using a special group-terminating nop, then we need only one.
-    if (Directive == PPC::DIR_PWR6 || Directive == PPC::DIR_PWR7)
+    if (Directive == PPC::DIR_PWR6 || Directive == PPC::DIR_PWR7 ||
+        Directive == PPC::DIR_PWR8 )
       return 1;
 
     return 5 - CurSlots;
@@ -219,11 +220,11 @@ void PPCDispatchGroupSBHazardRecognizer::Reset() {
 
 void PPCDispatchGroupSBHazardRecognizer::EmitNoop() {
   unsigned Directive =
-    DAG->TM.getSubtarget<PPCSubtarget>().getDarwinDirective();
+      DAG->MF.getSubtarget<PPCSubtarget>().getDarwinDirective();
   // If the group has now filled all of its slots, or if we're using a special
   // group-terminating nop, the group is complete.
   if (Directive == PPC::DIR_PWR6 || Directive == PPC::DIR_PWR7 ||
-      CurSlots == 6)  {
+      Directive == PPC::DIR_PWR8 || CurSlots == 6)  {
     CurGroup.clear();
     CurSlots = CurBranches = 0;
   } else {
@@ -258,8 +259,8 @@ void PPCDispatchGroupSBHazardRecognizer::EmitNoop() {
 //   3. Handling of the esoteric cases in "Resource-based Instruction Grouping".
 //
 
-PPCHazardRecognizer970::PPCHazardRecognizer970(const TargetMachine &TM)
-  : TM(TM) {
+PPCHazardRecognizer970::PPCHazardRecognizer970(const ScheduleDAG &DAG)
+    : DAG(DAG) {
   EndDispatchGroup();
 }
 
@@ -278,7 +279,7 @@ PPCHazardRecognizer970::GetInstrType(unsigned Opcode,
                                      bool &isFirst, bool &isSingle,
                                      bool &isCracked,
                                      bool &isLoad, bool &isStore) {
-  const MCInstrDesc &MCID = TM.getInstrInfo()->get(Opcode);
+  const MCInstrDesc &MCID = DAG.TII->get(Opcode);
 
   isLoad  = MCID.mayLoad();
   isStore = MCID.mayStore();

@@ -10,6 +10,7 @@
 
 #include "AMDGPU.h"
 #include "AMDGPUInstrInfo.h"
+#include "AMDGPUSubtarget.h"
 #include "R600InstrInfo.h"
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SCCIterator.h"
@@ -29,6 +30,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetMachine.h"
+#include <deque>
 
 using namespace llvm;
 
@@ -139,11 +141,11 @@ public:
     initializeAMDGPUCFGStructurizerPass(*PassRegistry::getPassRegistry());
   }
 
-   const char *getPassName() const {
+   const char *getPassName() const override {
     return "AMDGPU Control Flow Graph structurizer Pass";
   }
 
-  void getAnalysisUsage(AnalysisUsage &AU) const {
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.addPreserved<MachineFunctionAnalysis>();
     AU.addRequired<MachineFunctionAnalysis>();
     AU.addRequired<MachineDominatorTree>();
@@ -159,16 +161,17 @@ public:
   /// sure all loops have an exit block
   bool prepare();
 
-  bool runOnMachineFunction(MachineFunction &MF) {
-    TII = static_cast<const R600InstrInfo *>(MF.getTarget().getInstrInfo());
+  bool runOnMachineFunction(MachineFunction &MF) override {
+    TII = static_cast<const R600InstrInfo *>(MF.getSubtarget().getInstrInfo());
     TRI = &TII->getRegisterInfo();
     DEBUG(MF.dump(););
     OrderedBlks.clear();
+    Visited.clear();
     FuncRep = &MF;
     MLI = &getAnalysis<MachineLoopInfo>();
     DEBUG(dbgs() << "LoopInfo:\n"; PrintLoopinfo(*MLI););
     MDT = &getAnalysis<MachineDominatorTree>();
-    DEBUG(MDT->print(dbgs(), (const llvm::Module*)0););
+    DEBUG(MDT->print(dbgs(), (const llvm::Module*)nullptr););
     PDT = &getAnalysis<MachinePostDominatorTree>();
     DEBUG(PDT->print(dbgs()););
     prepare();
@@ -337,7 +340,7 @@ protected:
   void setLoopLandBlock(MachineLoop *LoopRep, MachineBasicBlock *MBB = nullptr);
 
   MachineBasicBlock *findNearestCommonPostDom(std::set<MachineBasicBlock *>&);
-  /// This is work around solution for findNearestCommonDominator not avaiable
+  /// This is work around solution for findNearestCommonDominator not available
   /// to post dom a proper fix should go to Dominators.h.
   MachineBasicBlock *findNearestCommonPostDom(MachineBasicBlock *MBB1,
       MachineBasicBlock *MBB2);
@@ -620,7 +623,7 @@ DebugLoc AMDGPUCFGStructurizer::getLastDebugLocInBB(MachineBasicBlock *MBB) {
   for (MachineBasicBlock::iterator It = MBB->begin(); It != MBB->end();
       ++It) {
     MachineInstr *instr = &(*It);
-    if (instr->getDebugLoc().isUnknown() == false)
+    if (instr->getDebugLoc())
       DL = instr->getDebugLoc();
   }
   return DL;
@@ -1074,21 +1077,19 @@ int AMDGPUCFGStructurizer::ifPatternMatch(MachineBasicBlock *MBB) {
 }
 
 int AMDGPUCFGStructurizer::loopendPatternMatch() {
-  std::vector<MachineLoop *> NestedLoops;
-  for (MachineLoopInfo::iterator It = MLI->begin(), E = MLI->end(); It != E;
-       ++It)
-    for (MachineLoop *ML : depth_first(*It))
-      NestedLoops.push_back(ML);
+  std::deque<MachineLoop *> NestedLoops;
+  for (auto &It: *MLI)
+    for (MachineLoop *ML : depth_first(It))
+      NestedLoops.push_front(ML);
 
   if (NestedLoops.size() == 0)
     return 0;
 
-  // Process nested loop outside->inside, so "continue" to a outside loop won't
-  // be mistaken as "break" of the current loop.
+  // Process nested loop outside->inside (we did push_front),
+  // so "continue" to a outside loop won't be mistaken as "break"
+  // of the current loop.
   int Num = 0;
-  for (std::vector<MachineLoop *>::reverse_iterator It = NestedLoops.rbegin(),
-      E = NestedLoops.rend(); It != E; ++It) {
-    MachineLoop *ExaminedLoop = *It;
+  for (MachineLoop *ExaminedLoop : NestedLoops) {
     if (ExaminedLoop->getNumBlocks() == 0 || Visited[ExaminedLoop])
       continue;
     DEBUG(dbgs() << "Processing:\n"; ExaminedLoop->dump(););
@@ -1610,7 +1611,7 @@ void AMDGPUCFGStructurizer::settleLoopcontBlock(MachineBasicBlock *ContingMBB,
 
     bool UseContinueLogical = ((&*ContingMBB->rbegin()) == MI);
 
-    if (UseContinueLogical == false) {
+    if (!UseContinueLogical) {
       int BranchOpcode =
           TrueBranch == ContMBB ? getBranchNzeroOpcode(OldOpcode) :
           getBranchZeroOpcode(OldOpcode);

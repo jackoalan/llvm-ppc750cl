@@ -16,14 +16,15 @@
 
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/ADT/iterator_range.h"
+#include "llvm/Object/Archive.h"
 #include "llvm/Object/Binary.h"
+#include "llvm/Object/MachO.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/MachO.h"
 
 namespace llvm {
 namespace object {
-
-class ObjectFile;
 
 class MachOUniversalBinary : public Binary {
   virtual void anchor();
@@ -51,17 +52,26 @@ public:
 
     ObjectForArch getNext() const { return ObjectForArch(Parent, Index + 1); }
     uint32_t getCPUType() const { return Header.cputype; }
+    uint32_t getCPUSubType() const { return Header.cpusubtype; }
+    uint32_t getOffset() const { return Header.offset; }
+    uint32_t getSize() const { return Header.size; }
+    uint32_t getAlign() const { return Header.align; }
+    std::string getArchTypeName() const {
+      Triple T = MachOObjectFile::getArch(Header.cputype, Header.cpusubtype);
+      return T.getArchName();
+    }
 
-    error_code getAsObjectFile(std::unique_ptr<ObjectFile> &Result) const;
+    ErrorOr<std::unique_ptr<MachOObjectFile>> getAsObjectFile() const;
+
+    ErrorOr<std::unique_ptr<Archive>> getAsArchive() const;
   };
 
   class object_iterator {
     ObjectForArch Obj;
   public:
     object_iterator(const ObjectForArch &Obj) : Obj(Obj) {}
-    const ObjectForArch* operator->() const {
-      return &Obj;
-    }
+    const ObjectForArch *operator->() const { return &Obj; }
+    const ObjectForArch &operator*() const { return Obj; }
 
     bool operator==(const object_iterator &Other) const {
       return Obj == Other.Obj;
@@ -76,14 +86,19 @@ public:
     }
   };
 
-  MachOUniversalBinary(MemoryBuffer *Source, error_code &ec);
-  static ErrorOr<MachOUniversalBinary*> create(MemoryBuffer *Source);
+  MachOUniversalBinary(MemoryBufferRef Souce, std::error_code &EC);
+  static ErrorOr<std::unique_ptr<MachOUniversalBinary>>
+  create(MemoryBufferRef Source);
 
   object_iterator begin_objects() const {
     return ObjectForArch(this, 0);
   }
   object_iterator end_objects() const {
     return ObjectForArch(nullptr, 0);
+  }
+
+  iterator_range<object_iterator> objects() const {
+    return make_range(begin_objects(), end_objects());
   }
 
   uint32_t getNumberOfObjects() const { return NumberOfObjects; }
@@ -93,8 +108,8 @@ public:
     return V->isMachOUniversalBinary();
   }
 
-  error_code getObjectForArch(Triple::ArchType Arch,
-                              std::unique_ptr<ObjectFile> &Result) const;
+  ErrorOr<std::unique_ptr<MachOObjectFile>>
+  getObjectForArch(Triple::ArchType Arch) const;
 };
 
 }

@@ -219,10 +219,15 @@ public:
   unsigned size() const { return (unsigned)Insts.size(); }
   bool empty() const { return Insts.empty(); }
 
-  MachineInstr& front() { return Insts.front(); }
-  MachineInstr& back()  { return Insts.back(); }
-  const MachineInstr& front() const { return Insts.front(); }
-  const MachineInstr& back()  const { return Insts.back(); }
+  MachineInstr       &instr_front()       { return Insts.front(); }
+  MachineInstr       &instr_back()        { return Insts.back();  }
+  const MachineInstr &instr_front() const { return Insts.front(); }
+  const MachineInstr &instr_back()  const { return Insts.back();  }
+
+  MachineInstr       &front()             { return Insts.front(); }
+  MachineInstr       &back()              { return *--end();      }
+  const MachineInstr &front()       const { return Insts.front(); }
+  const MachineInstr &back()        const { return *--end();      }
 
   instr_iterator                instr_begin()       { return Insts.begin();  }
   const_instr_iterator          instr_begin() const { return Insts.begin();  }
@@ -481,11 +486,15 @@ public:
   /// Insert a range of instructions into the instruction list before I.
   template<typename IT>
   void insert(iterator I, IT S, IT E) {
+    assert((I == end() || I->getParent() == this) &&
+           "iterator points outside of basic block");
     Insts.insert(I.getInstrIterator(), S, E);
   }
 
   /// Insert MI into the instruction list before I.
   iterator insert(iterator I, MachineInstr *MI) {
+    assert((I == end() || I->getParent() == this) &&
+           "iterator points outside of basic block");
     assert(!MI->isBundledWithPred() && !MI->isBundledWithSucc() &&
            "Cannot insert instruction with bundle flags");
     return Insts.insert(I.getInstrIterator(), MI);
@@ -493,6 +502,8 @@ public:
 
   /// Insert MI into the instruction list after I.
   iterator insertAfter(iterator I, MachineInstr *MI) {
+    assert((I == end() || I->getParent() == this) &&
+           "iterator points outside of basic block");
     assert(!MI->isBundledWithPred() && !MI->isBundledWithSucc() &&
            "Cannot insert instruction with bundle flags");
     return Insts.insertAfter(I.getInstrIterator(), MI);
@@ -615,7 +626,7 @@ public:
 
   /// computeRegisterLiveness - Return whether (physical) register \c Reg
   /// has been <def>ined and not <kill>ed as of just before \c MI.
-  /// 
+  ///
   /// Search is localised to a neighborhood of
   /// \c Neighborhood instructions before (searching for defs or kills) and
   /// Neighborhood instructions after (searching just for defs) MI.
@@ -630,7 +641,7 @@ public:
   void print(raw_ostream &OS, SlotIndexes* = nullptr) const;
 
   // Printing method used by LoopInfo.
-  void printAsOperand(raw_ostream &OS, bool PrintType = true);
+  void printAsOperand(raw_ostream &OS, bool PrintType = true) const;
 
   /// getNumber - MachineBasicBlocks are uniquely numbered at the function
   /// level, unless they're not in a MachineFunction yet, in which case this

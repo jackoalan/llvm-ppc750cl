@@ -1,4 +1,4 @@
-; RUN: llc < %s -O0 -verify-machineinstrs -fast-isel-abort -mtriple=powerpc64-unknown-linux-gnu -mcpu=pwr5 | FileCheck %s --check-prefix=ELF64
+; RUN: llc < %s -O0 -verify-machineinstrs -fast-isel-abort=1 -mtriple=powerpc64-unknown-linux-gnu -mcpu=pwr5 | FileCheck %s --check-prefix=ELF64
 
 ; Test sitofp
 
@@ -116,18 +116,6 @@ entry:
   ret void
 }
 
-define void @fptoui_float_i64(float %a) nounwind ssp {
-entry:
-; ELF64: fptoui_float_i64
-  %b.addr = alloca i64, align 4
-  %conv = fptoui float %a to i64
-; ELF64: fctiduz
-; ELF64: stfd
-; ELF64: ld
-  store i64 %conv, i64* %b.addr, align 4
-  ret void
-}
-
 define void @fptoui_double_i32(double %a) nounwind ssp {
 entry:
 ; ELF64: fptoui_double_i32
@@ -140,14 +128,3 @@ entry:
   ret void
 }
 
-define void @fptoui_double_i64(double %a) nounwind ssp {
-entry:
-; ELF64: fptoui_double_i64
-  %b.addr = alloca i64, align 8
-  %conv = fptoui double %a to i64
-; ELF64: fctiduz
-; ELF64: stfd
-; ELF64: ld
-  store i64 %conv, i64* %b.addr, align 8
-  ret void
-}

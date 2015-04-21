@@ -19,7 +19,6 @@
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
@@ -41,7 +40,7 @@ static void decreaseSetPressure(std::vector<unsigned> &CurrSetPressure,
   }
 }
 
-#if !defined(NDEBUG) || defined(LLVM_ENABLE_DUMP)
+LLVM_DUMP_METHOD
 void llvm::dumpRegSetPressure(ArrayRef<unsigned> SetPressure,
                               const TargetRegisterInfo *TRI) {
   bool Empty = true;
@@ -55,6 +54,7 @@ void llvm::dumpRegSetPressure(ArrayRef<unsigned> SetPressure,
     dbgs() << "\n";
 }
 
+LLVM_DUMP_METHOD
 void RegisterPressure::dump(const TargetRegisterInfo *TRI) const {
   dbgs() << "Max Pressure: ";
   dumpRegSetPressure(MaxSetPressure, TRI);
@@ -68,6 +68,7 @@ void RegisterPressure::dump(const TargetRegisterInfo *TRI) const {
   dbgs() << '\n';
 }
 
+LLVM_DUMP_METHOD
 void RegPressureTracker::dump() const {
   if (!isTopClosed() || !isBottomClosed()) {
     dbgs() << "Curr Pressure: ";
@@ -75,7 +76,6 @@ void RegPressureTracker::dump() const {
   }
   P.dump(TRI);
 }
-#endif
 
 /// Increase the current pressure as impacted by these registers and bump
 /// the high water mark if needed.
@@ -184,7 +184,7 @@ void RegPressureTracker::init(const MachineFunction *mf,
   reset();
 
   MF = mf;
-  TRI = MF->getTarget().getRegisterInfo();
+  TRI = MF->getSubtarget().getRegisterInfo();
   RCI = rci;
   MRI = &MF->getRegInfo();
   MBB = mbb;
@@ -304,6 +304,7 @@ static bool containsReg(ArrayRef<unsigned> RegUnits, unsigned RegUnit) {
   return std::find(RegUnits.begin(), RegUnits.end(), RegUnit) != RegUnits.end();
 }
 
+namespace {
 /// Collect this instruction's unique uses and defs into SmallVectors for
 /// processing defs and uses in order.
 ///
@@ -354,6 +355,7 @@ protected:
     }
   }
 };
+} // namespace
 
 /// Collect physical and virtual register operands.
 static void collectOperands(const MachineInstr *MI,

@@ -7,8 +7,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_READOBJ_STREAMWRITER_H
-#define LLVM_READOBJ_STREAMWRITER_H
+#ifndef LLVM_TOOLS_LLVM_READOBJ_STREAMWRITER_H
+#define LLVM_TOOLS_LLVM_READOBJ_STREAMWRITER_H
 
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/SmallVector.h"
@@ -169,6 +169,10 @@ public:
     startLine() << Label << ": " << int(Value) << "\n";
   }
 
+  void printBoolean(StringRef Label, bool Value) {
+    startLine() << Label << ": " << (Value ? "Yes" : "No") << '\n';
+  }
+
   template <typename T_>
   void printList(StringRef Label, const SmallVectorImpl<T_> &List) {
     startLine() << Label << ": [";
@@ -210,8 +214,8 @@ public:
   }
 
   void printBinary(StringRef Label, StringRef Str, ArrayRef<char> Value) {
-    ArrayRef<uint8_t> V(reinterpret_cast<const uint8_t*>(Value.data()),
-                        Value.size());
+    auto V = makeArrayRef(reinterpret_cast<const uint8_t*>(Value.data()),
+                          Value.size());
     printBinaryImpl(Label, Str, V, false);
   }
 
@@ -220,20 +224,20 @@ public:
   }
 
   void printBinary(StringRef Label, ArrayRef<char> Value) {
-    ArrayRef<uint8_t> V(reinterpret_cast<const uint8_t*>(Value.data()),
-                        Value.size());
+    auto V = makeArrayRef(reinterpret_cast<const uint8_t*>(Value.data()),
+                          Value.size());
     printBinaryImpl(Label, StringRef(), V, false);
   }
 
   void printBinary(StringRef Label, StringRef Value) {
-    ArrayRef<uint8_t> V(reinterpret_cast<const uint8_t*>(Value.data()),
-                        Value.size());
+    auto V = makeArrayRef(reinterpret_cast<const uint8_t*>(Value.data()),
+                          Value.size());
     printBinaryImpl(Label, StringRef(), V, false);
   }
 
   void printBinaryBlock(StringRef Label, StringRef Value) {
-    ArrayRef<uint8_t> V(reinterpret_cast<const uint8_t*>(Value.data()),
-                        Value.size());
+    auto V = makeArrayRef(reinterpret_cast<const uint8_t*>(Value.data()),
+                          Value.size());
     printBinaryImpl(Label, StringRef(), V, true);
   }
 

@@ -15,7 +15,7 @@
 #define LLVM_OBJECT_COFFYAML_H
 
 #include "llvm/ADT/Optional.h"
-#include "llvm/Object/YAML.h"
+#include "llvm/MC/YAML.h"
 #include "llvm/Support/COFF.h"
 
 namespace llvm {
@@ -30,6 +30,12 @@ inline SectionCharacteristics operator|(SectionCharacteristics a,
                                         SectionCharacteristics b) {
   uint32_t Ret = static_cast<uint32_t>(a) | static_cast<uint32_t>(b);
   return static_cast<SectionCharacteristics>(Ret);
+}
+
+inline DLLCharacteristics operator|(DLLCharacteristics a,
+                                    DLLCharacteristics b) {
+  uint16_t Ret = static_cast<uint16_t>(a) | static_cast<uint16_t>(b);
+  return static_cast<DLLCharacteristics>(Ret);
 }
 }
 
@@ -49,7 +55,7 @@ namespace COFFYAML {
   struct Section {
     COFF::section Header;
     unsigned Alignment;
-    object::yaml::BinaryRef SectionData;
+    yaml::BinaryRef SectionData;
     std::vector<Relocation> Relocations;
     StringRef Name;
     Section();
@@ -69,7 +75,13 @@ namespace COFFYAML {
     Symbol();
   };
 
+  struct PEHeader {
+    COFF::PE32Header Header;
+    Optional<COFF::DataDirectory> DataDirectories[COFF::NUM_DATA_DIRECTORIES];
+  };
+
   struct Object {
+    Optional<PEHeader> OptionalHeader;
     COFF::header Header;
     std::vector<Section> Sections;
     std::vector<Symbol> Symbols;
@@ -131,6 +143,11 @@ struct ScalarEnumerationTraits<COFF::RelocationTypeAMD64> {
 };
 
 template <>
+struct ScalarEnumerationTraits<COFF::WindowsSubsystem> {
+  static void enumeration(IO &IO, COFF::WindowsSubsystem &Value);
+};
+
+template <>
 struct ScalarBitSetTraits<COFF::Characteristics> {
   static void bitset(IO &IO, COFF::Characteristics &Value);
 };
@@ -141,8 +158,23 @@ struct ScalarBitSetTraits<COFF::SectionCharacteristics> {
 };
 
 template <>
+struct ScalarBitSetTraits<COFF::DLLCharacteristics> {
+  static void bitset(IO &IO, COFF::DLLCharacteristics &Value);
+};
+
+template <>
 struct MappingTraits<COFFYAML::Relocation> {
   static void mapping(IO &IO, COFFYAML::Relocation &Rel);
+};
+
+template <>
+struct MappingTraits<COFFYAML::PEHeader> {
+  static void mapping(IO &IO, COFFYAML::PEHeader &PH);
+};
+
+template <>
+struct MappingTraits<COFF::DataDirectory> {
+  static void mapping(IO &IO, COFF::DataDirectory &DD);
 };
 
 template <>

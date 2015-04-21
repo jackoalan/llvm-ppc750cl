@@ -13,17 +13,17 @@ foobar:
 	.long	43
 
 // CHECK:        Symbol {
-// CHECK:          Name: foobar (31)
+// CHECK:          Name: foobar
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Local
 // CHECK-NEXT:     Type: TLS
 // CHECK-NEXT:     Other: 0
-// CHECK-NEXT:     Section: .zed (0x5)
+// CHECK-NEXT:     Section: .zed
 // CHECK-NEXT:   }
 
 // CHECK:        Symbol {
-// CHECK:          Name: foo1 (1)
+// CHECK:          Name: foo1
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global
@@ -32,7 +32,7 @@ foobar:
 // CHECK-NEXT:     Section: Undefined (0x0)
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Symbol {
-// CHECK-NEXT:     Name: foo2 (6)
+// CHECK-NEXT:     Name: foo2
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global
@@ -41,7 +41,7 @@ foobar:
 // CHECK-NEXT:     Section: Undefined (0x0)
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Symbol {
-// CHECK-NEXT:     Name: foo3 (11)
+// CHECK-NEXT:     Name: foo3
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global
@@ -50,7 +50,7 @@ foobar:
 // CHECK-NEXT:     Section: Undefined (0x0)
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Symbol {
-// CHECK-NEXT:     Name: foo4 (16)
+// CHECK-NEXT:     Name: foo4
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global
@@ -59,7 +59,7 @@ foobar:
 // CHECK-NEXT:     Section: Undefined (0x0)
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Symbol {
-// CHECK-NEXT:     Name: foo5 (21)
+// CHECK-NEXT:     Name: foo5
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global
@@ -68,7 +68,7 @@ foobar:
 // CHECK-NEXT:     Section: Undefined (0x0)
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Symbol {
-// CHECK-NEXT:     Name: foo6 (26)
+// CHECK-NEXT:     Name: foo6
 // CHECK-NEXT:     Value: 0x0
 // CHECK-NEXT:     Size: 0
 // CHECK-NEXT:     Binding: Global

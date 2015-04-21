@@ -24,18 +24,24 @@ class MCSubtargetInfo;
 class MCSymbol;
 class StringRef;
 class raw_ostream;
+class raw_pwrite_stream;
 
 class MCWinCOFFStreamer : public MCObjectStreamer {
 public:
   MCWinCOFFStreamer(MCContext &Context, MCAsmBackend &MAB, MCCodeEmitter &CE,
-                    raw_ostream &OS);
+                    raw_pwrite_stream &OS);
+
+  /// state management
+  void reset() override {
+    CurSymbol = nullptr;
+    MCObjectStreamer::reset();
+  }
 
   /// \name MCStreamer interface
   /// \{
 
-  void InitSections() override;
+  void InitSections(bool NoExecStack) override;
   void EmitLabel(MCSymbol *Symbol) override;
-  void EmitDebugLabel(MCSymbol *Symbol) override;
   void EmitAssemblerFlag(MCAssemblerFlag Flag) override;
   void EmitThumbFunc(MCSymbol *Func) override;
   bool EmitSymbolAttribute(MCSymbol *Symbol, MCSymbolAttr Attribute) override;
@@ -57,16 +63,17 @@ public:
                       unsigned ByteAlignment) override;
   void EmitFileDirective(StringRef Filename) override;
   void EmitIdent(StringRef IdentString) override;
-  void EmitWin64EHHandlerData() override;
+  void EmitWinEHHandlerData() override;
   void FinishImpl() override;
 
   /// \}
 
-  MCSymbolData &getOrCreateSymbolData(const MCSymbol *Symbol);
-
 protected:
   const MCSymbol *CurSymbol;
   void EmitInstToData(const MCInst &Inst, const MCSubtargetInfo &STI) override;
+
+private:
+  LLVM_ATTRIBUTE_NORETURN void FatalError(const Twine &Msg) const;
 };
 }
 

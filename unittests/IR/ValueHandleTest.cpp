@@ -94,7 +94,7 @@ TEST_F(ValueHandle, WeakVH_NullOnDeletion) {
   WeakVH WVH_Copy(WVH);
   WeakVH WVH_Recreated(BitcastV.get());
   BitcastV.reset();
-  Value *null_value = NULL;
+  Value *null_value = nullptr;
   EXPECT_EQ(null_value, WVH);
   EXPECT_EQ(null_value, WVH_Copy);
   EXPECT_EQ(null_value, WVH_Recreated);
@@ -178,10 +178,10 @@ TEST_F(ValueHandle, AssertingVH_Asserts) {
   EXPECT_DEATH({BitcastV.reset();},
                "An asserting value handle still pointed to this value!");
   AssertingVH<Value> Copy(AVH);
-  AVH = NULL;
+  AVH = nullptr;
   EXPECT_DEATH({BitcastV.reset();},
                "An asserting value handle still pointed to this value!");
-  Copy = NULL;
+  Copy = nullptr;
   BitcastV.reset();
 }
 
@@ -244,8 +244,11 @@ TEST_F(ValueHandle, CallbackVH_CallbackOnDeletion) {
     RecordingVH(Value *V) : CallbackVH(V), DeletedCalls(0), AURWCalls(0) {}
 
   private:
-    virtual void deleted() { DeletedCalls++; CallbackVH::deleted(); }
-    virtual void allUsesReplacedWith(Value *) { AURWCalls++; }
+    void deleted() override {
+      DeletedCalls++;
+      CallbackVH::deleted();
+    }
+    void allUsesReplacedWith(Value *) override { AURWCalls++; }
   };
 
   RecordingVH RVH;
@@ -263,14 +266,17 @@ TEST_F(ValueHandle, CallbackVH_CallbackOnRAUW) {
     int DeletedCalls;
     Value *AURWArgument;
 
-    RecordingVH() : DeletedCalls(0), AURWArgument(NULL) {}
+    RecordingVH() : DeletedCalls(0), AURWArgument(nullptr) {}
     RecordingVH(Value *V)
-      : CallbackVH(V), DeletedCalls(0), AURWArgument(NULL) {}
+      : CallbackVH(V), DeletedCalls(0), AURWArgument(nullptr) {}
 
   private:
-    virtual void deleted() { DeletedCalls++; CallbackVH::deleted(); }
-    virtual void allUsesReplacedWith(Value *new_value) {
-      EXPECT_EQ(NULL, AURWArgument);
+    void deleted() override {
+      DeletedCalls++;
+      CallbackVH::deleted();
+    }
+    void allUsesReplacedWith(Value *new_value) override {
+      EXPECT_EQ(nullptr, AURWArgument);
       AURWArgument = new_value;
     }
   };
@@ -278,7 +284,7 @@ TEST_F(ValueHandle, CallbackVH_CallbackOnRAUW) {
   RecordingVH RVH;
   RVH = BitcastV.get();
   EXPECT_EQ(0, RVH.DeletedCalls);
-  EXPECT_EQ(NULL, RVH.AURWArgument);
+  EXPECT_EQ(nullptr, RVH.AURWArgument);
   BitcastV->replaceAllUsesWith(ConstantV);
   EXPECT_EQ(0, RVH.DeletedCalls);
   EXPECT_EQ(ConstantV, RVH.AURWArgument);
@@ -291,21 +297,21 @@ TEST_F(ValueHandle, CallbackVH_DeletionCanRAUW) {
     Value *AURWArgument;
     LLVMContext *Context;
 
-    RecoveringVH() : DeletedCalls(0), AURWArgument(NULL), 
+    RecoveringVH() : DeletedCalls(0), AURWArgument(nullptr), 
                      Context(&getGlobalContext()) {}
     RecoveringVH(Value *V)
-      : CallbackVH(V), DeletedCalls(0), AURWArgument(NULL), 
+      : CallbackVH(V), DeletedCalls(0), AURWArgument(nullptr), 
         Context(&getGlobalContext()) {}
 
   private:
-    virtual void deleted() {
+    void deleted() override {
       getValPtr()->replaceAllUsesWith(Constant::getNullValue(Type::getInt32Ty(getGlobalContext())));
-      setValPtr(NULL);
+      setValPtr(nullptr);
     }
-    virtual void allUsesReplacedWith(Value *new_value) {
-      ASSERT_TRUE(NULL != getValPtr());
+    void allUsesReplacedWith(Value *new_value) override {
+      ASSERT_TRUE(nullptr != getValPtr());
       EXPECT_EQ(1U, getValPtr()->getNumUses());
-      EXPECT_EQ(NULL, AURWArgument);
+      EXPECT_EQ(nullptr, AURWArgument);
       AURWArgument = new_value;
     }
   };
@@ -341,12 +347,12 @@ TEST_F(ValueHandle, DestroyingOtherVHOnSameValueDoesntBreakIteration) {
       setValPtr(V);
       ToClear[1].reset(new WeakVH(V));
     }
-    virtual void deleted() {
+    void deleted() override {
       ToClear[0].reset();
       ToClear[1].reset();
       CallbackVH::deleted();
     }
-    virtual void allUsesReplacedWith(Value *) {
+    void allUsesReplacedWith(Value *) override {
       ToClear[0].reset();
       ToClear[1].reset();
     }
@@ -368,8 +374,8 @@ TEST_F(ValueHandle, DestroyingOtherVHOnSameValueDoesntBreakIteration) {
     WeakVH ShouldBeVisited2(BitcastV.get());
 
     BitcastV.reset();
-    EXPECT_EQ(NULL, static_cast<Value*>(ShouldBeVisited1));
-    EXPECT_EQ(NULL, static_cast<Value*>(ShouldBeVisited2));
+    EXPECT_EQ(nullptr, static_cast<Value*>(ShouldBeVisited1));
+    EXPECT_EQ(nullptr, static_cast<Value*>(ShouldBeVisited2));
   }
 }
 
@@ -388,9 +394,9 @@ TEST_F(ValueHandle, AssertingVHCheckedLast) {
       ToClear[1] = &A1;
     }
 
-    virtual void deleted() {
-      *ToClear[0] = 0;
-      *ToClear[1] = 0;
+    void deleted() override {
+      *ToClear[0] = nullptr;
+      *ToClear[1] = nullptr;
       CallbackVH::deleted();
     }
   };

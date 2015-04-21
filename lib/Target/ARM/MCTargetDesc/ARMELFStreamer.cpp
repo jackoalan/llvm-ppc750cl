@@ -15,6 +15,7 @@
 
 #include "ARMArchName.h"
 #include "ARMFPUName.h"
+#include "ARMArchExtName.h"
 #include "ARMRegisterInfo.h"
 #include "ARMUnwindOpAsm.h"
 #include "llvm/ADT/StringExtras.h"
@@ -30,6 +31,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstPrinter.h"
+#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSection.h"
@@ -104,6 +106,19 @@ static unsigned GetArchDefaultCPUArch(unsigned ID) {
   return 0;
 }
 
+static const char *GetArchExtName(unsigned ID) {
+  switch (ID) {
+  default:
+    llvm_unreachable("Unknown ARCH Extension kind");
+    break;
+#define ARM_ARCHEXT_NAME(NAME, ID)                                             \
+  case ARM::ID:                                                                \
+    return NAME;
+#include "ARMArchExtName.def"
+  }
+  return nullptr;
+}
+
 namespace {
 
 class ARMELFStreamer;
@@ -133,12 +148,14 @@ class ARMTargetAsmStreamer : public ARMTargetStreamer {
   void emitIntTextAttribute(unsigned Attribute, unsigned IntValue,
                             StringRef StrinValue) override;
   void emitArch(unsigned Arch) override;
+  void emitArchExtension(unsigned ArchExt) override;
   void emitObjectArch(unsigned Arch) override;
   void emitFPU(unsigned FPU) override;
   void emitInst(uint32_t Inst, char Suffix = '\0') override;
   void finishAttributeSection() override;
 
   void AnnotateTLSDescriptorSequence(const MCSymbolRefExpr *SRE) override;
+  void emitThumbSet(MCSymbol *Symbol, const MCExpr *Value) override;
 
 public:
   ARMTargetAsmStreamer(MCStreamer &S, formatted_raw_ostream &OS,
@@ -247,6 +264,9 @@ void ARMTargetAsmStreamer::emitIntTextAttribute(unsigned Attribute,
 void ARMTargetAsmStreamer::emitArch(unsigned Arch) {
   OS << "\t.arch\t" << GetArchName(Arch) << "\n";
 }
+void ARMTargetAsmStreamer::emitArchExtension(unsigned ArchExt) {
+  OS << "\t.arch_extension\t" << GetArchExtName(ArchExt) << "\n";
+}
 void ARMTargetAsmStreamer::emitObjectArch(unsigned Arch) {
   OS << "\t.object_arch\t" << GetArchName(Arch) << '\n';
 }
@@ -258,6 +278,10 @@ void ARMTargetAsmStreamer::finishAttributeSection() {
 void
 ARMTargetAsmStreamer::AnnotateTLSDescriptorSequence(const MCSymbolRefExpr *S) {
   OS << "\t.tlsdescseq\t" << S->getSymbol().getName();
+}
+
+void ARMTargetAsmStreamer::emitThumbSet(MCSymbol *Symbol, const MCExpr *Value) {
+  OS << "\t.thumb_set\t" << *Symbol << ", " << *Value << '\n';
 }
 
 void ARMTargetAsmStreamer::emitInst(uint32_t Inst, char Suffix) {
@@ -294,7 +318,19 @@ private:
     StringRef StringValue;
 
     static bool LessTag(const AttributeItem &LHS, const AttributeItem &RHS) {
-      return (LHS.Tag < RHS.Tag);
+      // The conformance tag must be emitted first when serialised
+      // into an object file. Specifically, the addenda to the ARM ABI
+      // states that (2.3.7.4):
+      //
+      // "To simplify recognition by consumers in the common case of
+      // claiming conformity for the whole file, this tag should be
+      // emitted first in a file-scope sub-subsection of the first
+      // public subsection of the attributes section."
+      //
+      // So it is special-cased in this comparison predicate when the
+      // attributes are sorted in finishAttributeSection().
+      return (RHS.Tag != ARMBuildAttrs::conformance) &&
+             ((LHS.Tag == ARMBuildAttrs::conformance) || (LHS.Tag < RHS.Tag));
     }
   };
 
@@ -406,8 +442,10 @@ private:
   void emitFPU(unsigned FPU) override;
   void emitInst(uint32_t Inst, char Suffix = '\0') override;
   void finishAttributeSection() override;
+  void emitLabel(MCSymbol *Symbol) override;
 
   void AnnotateTLSDescriptorSequence(const MCSymbolRefExpr *SRE) override;
+  void emitThumbSet(MCSymbol *Symbol, const MCExpr *Value) override;
 
   size_t calculateContentSize() const;
 
@@ -434,7 +472,7 @@ class ARMELFStreamer : public MCELFStreamer {
 public:
   friend class ARMTargetELFStreamer;
 
-  ARMELFStreamer(MCContext &Context, MCAsmBackend &TAB, raw_ostream &OS,
+  ARMELFStreamer(MCContext &Context, MCAsmBackend &TAB, raw_pwrite_stream &OS,
                  MCCodeEmitter *Emitter, bool IsThumb)
       : MCELFStreamer(Context, TAB, OS, Emitter), IsThumb(IsThumb),
         MappingSymbolCounter(0), LastEMS(EMS_None) {
@@ -533,6 +571,10 @@ public:
   /// necessary.
   void EmitValueImpl(const MCExpr *Value, unsigned Size,
                      const SMLoc &Loc) override {
+    if (const MCSymbolRefExpr *SRE = dyn_cast_or_null<MCSymbolRefExpr>(Value))
+      if (SRE->getKind() == MCSymbolRefExpr::VK_ARM_SBREL && !(Size == 4))
+        getContext().FatalError(Loc, "relocated expression must be 32-bit");
+
     EmitDataMappingSymbol();
     MCELFStreamer::EmitValueImpl(Value, Size);
   }
@@ -601,12 +643,8 @@ private:
   }
 
   void EmitThumbFunc(MCSymbol *Func) override {
-    // FIXME: Anything needed here to flag the function as thumb?
-
     getAssembler().setIsThumbFunc(Func);
-
-    MCSymbolData &SD = getAssembler().getOrCreateSymbolData(*Func);
-    SD.setFlags(SD.getFlags() | ELF_Other_ThumbFunc);
+    EmitSymbolAttribute(Func, MCSA_ELF_TypeFunction);
   }
 
   // Helper functions for ARM exception handling directives
@@ -745,6 +783,7 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
     setAttributeItem(THUMB_ISA_use, AllowThumb32, false);
     break;
 
+  case ARM::ARMV6K:
   case ARM::ARMV6Z:
   case ARM::ARMV6ZK:
     setAttributeItem(ARM_ISA_use, Allowed, false);
@@ -778,6 +817,7 @@ void ARMTargetELFStreamer::emitArchDefaultAttributes() {
     break;
 
   case ARM::ARMV8A:
+  case ARM::ARMV8_1A:
     setAttributeItem(CPU_arch_profile, ApplicationProfile, false);
     setAttributeItem(ARM_ISA_use, Allowed, false);
     setAttributeItem(THUMB_ISA_use, AllowThumb32, false);
@@ -844,6 +884,14 @@ void ARMTargetELFStreamer::emitFPUDefaultAttributes() {
                      /* OverwriteExisting= */ false);
     break;
 
+  // FPV5_D16 is identical to FP_ARMV8 except for the number of D registers, so
+  // uses the FP_ARMV8_D16 build attribute.
+  case ARM::FPV5_D16:
+    setAttributeItem(ARMBuildAttrs::FP_arch,
+                     ARMBuildAttrs::AllowFPARMv8B,
+                     /* OverwriteExisting= */ false);
+    break;
+
   case ARM::NEON:
     setAttributeItem(ARMBuildAttrs::FP_arch,
                      ARMBuildAttrs::AllowFPv3A,
@@ -867,9 +915,8 @@ void ARMTargetELFStreamer::emitFPUDefaultAttributes() {
     setAttributeItem(ARMBuildAttrs::FP_arch,
                      ARMBuildAttrs::AllowFPARMv8A,
                      /* OverwriteExisting= */ false);
-    setAttributeItem(ARMBuildAttrs::Advanced_SIMD_arch,
-                     ARMBuildAttrs::AllowNeonARMv8,
-                     /* OverwriteExisting= */ false);
+    // 'Advanced_SIMD_arch' must be emitted not here, but within
+    // ARMAsmPrinter::emitAttributes(), depending on hasV8Ops() and hasV8_1a()
     break;
 
   case ARM::SOFTVFP:
@@ -930,11 +977,8 @@ void ARMTargetELFStreamer::finishAttributeSection() {
   if (AttributeSection) {
     Streamer.SwitchSection(AttributeSection);
   } else {
-    AttributeSection =
-      Streamer.getContext().getELFSection(".ARM.attributes",
-                                          ELF::SHT_ARM_ATTRIBUTES,
-                                          0,
-                                          SectionKind::getMetadata());
+    AttributeSection = Streamer.getContext().getELFSection(
+        ".ARM.attributes", ELF::SHT_ARM_ATTRIBUTES, 0);
     Streamer.SwitchSection(AttributeSection);
 
     // Format version
@@ -967,12 +1011,12 @@ void ARMTargetELFStreamer::finishAttributeSection() {
       Streamer.EmitULEB128IntValue(item.IntValue);
       break;
     case AttributeItem::TextAttribute:
-      Streamer.EmitBytes(item.StringValue.upper());
+      Streamer.EmitBytes(item.StringValue);
       Streamer.EmitIntValue(0, 1); // '\0'
       break;
     case AttributeItem::NumericAndTextAttributes:
       Streamer.EmitULEB128IntValue(item.IntValue);
-      Streamer.EmitBytes(item.StringValue.upper());
+      Streamer.EmitBytes(item.StringValue);
       Streamer.EmitIntValue(0, 1); // '\0'
       break;
     }
@@ -981,10 +1025,36 @@ void ARMTargetELFStreamer::finishAttributeSection() {
   Contents.clear();
   FPU = ARM::INVALID_FPU;
 }
+
+void ARMTargetELFStreamer::emitLabel(MCSymbol *Symbol) {
+  ARMELFStreamer &Streamer = getStreamer();
+  if (!Streamer.IsThumb)
+    return;
+
+  const MCSymbolData &SD = Streamer.getOrCreateSymbolData(Symbol);
+  unsigned Type = MCELF::GetType(SD);
+  if (Type == ELF_STT_Func || Type == ELF_STT_GnuIFunc)
+    Streamer.EmitThumbFunc(Symbol);
+}
+
 void
 ARMTargetELFStreamer::AnnotateTLSDescriptorSequence(const MCSymbolRefExpr *S) {
   getStreamer().EmitFixup(S, FK_Data_4);
 }
+
+void ARMTargetELFStreamer::emitThumbSet(MCSymbol *Symbol, const MCExpr *Value) {
+  if (const MCSymbolRefExpr *SRE = dyn_cast<MCSymbolRefExpr>(Value)) {
+    const MCSymbol &Sym = SRE->getSymbol();
+    if (!Sym.isDefined()) {
+      getStreamer().EmitAssignment(Symbol, Value);
+      return;
+    }
+  }
+
+  getStreamer().EmitThumbFunc(Symbol);
+  getStreamer().EmitAssignment(Symbol, Value);
+}
+
 void ARMTargetELFStreamer::emitInst(uint32_t Inst, char Suffix) {
   getStreamer().emitInst(Inst, Suffix);
 }
@@ -1013,14 +1083,13 @@ inline void ARMELFStreamer::SwitchToEHSection(const char *Prefix,
   }
 
   // Get .ARM.extab or .ARM.exidx section
-  const MCSectionELF *EHSection = nullptr;
-  if (const MCSymbol *Group = FnSection.getGroup()) {
-    EHSection = getContext().getELFSection(
-      EHSecName, Type, Flags | ELF::SHF_GROUP, Kind,
-      FnSection.getEntrySize(), Group->getName());
-  } else {
-    EHSection = getContext().getELFSection(EHSecName, Type, Flags, Kind);
-  }
+  const MCSymbol *Group = FnSection.getGroup();
+  if (Group)
+    Flags |= ELF::SHF_GROUP;
+  const MCSectionELF *EHSection =
+      getContext().getELFSection(EHSecName, Type, Flags, 0, Group,
+                                 FnSection.getUniqueID(), nullptr, &FnSection);
+
   assert(EHSection && "Failed to get the required EH section");
 
   // Switch to .ARM.extab or .ARM.exidx section
@@ -1066,7 +1135,7 @@ void ARMELFStreamer::Reset() {
 }
 
 void ARMELFStreamer::emitFnStart() {
-  assert(FnStart == 0);
+  assert(FnStart == nullptr);
   FnStart = getContext().CreateTempSymbol();
   EmitLabel(FnStart);
 }
@@ -1105,11 +1174,14 @@ void ARMELFStreamer::emitFnEnd() {
     // the second word of exception index table entry.  The size of the unwind
     // opcodes should always be 4 bytes.
     assert(PersonalityIndex == ARM::EHABI::AEABI_UNWIND_CPP_PR0 &&
-           "Compact model must use __aeabi_cpp_unwind_pr0 as personality");
+           "Compact model must use __aeabi_unwind_cpp_pr0 as personality");
     assert(Opcodes.size() == 4u &&
-           "Unwind opcode size for __aeabi_cpp_unwind_pr0 must be equal to 4");
-    EmitBytes(StringRef(reinterpret_cast<const char*>(Opcodes.data()),
-                        Opcodes.size()));
+           "Unwind opcode size for __aeabi_unwind_cpp_pr0 must be equal to 4");
+    uint64_t Intval = Opcodes[0] |
+                      Opcodes[1] << 8 |
+                      Opcodes[2] << 16 |
+                      Opcodes[3] << 24;
+    EmitIntValue(Intval, Opcodes.size());
   }
 
   // Switch to the section containing FnStart
@@ -1128,7 +1200,7 @@ void ARMELFStreamer::EmitPersonalityFixup(StringRef Name) {
   const MCSymbolRefExpr *PersonalityRef = MCSymbolRefExpr::Create(
       PersonalitySym, MCSymbolRefExpr::VK_ARM_NONE, getContext());
 
-  AddValueSymbols(PersonalityRef);
+  visitUsedExpr(*PersonalityRef);
   MCDataFragment *DF = getOrCreateDataFragment();
   DF->getFixups().push_back(MCFixup::Create(DF->getContents().size(),
                                             PersonalityRef,
@@ -1181,8 +1253,15 @@ void ARMELFStreamer::FlushUnwindOpcodes(bool NoHandlerData) {
   }
 
   // Emit unwind opcodes
-  EmitBytes(StringRef(reinterpret_cast<const char *>(Opcodes.data()),
-                      Opcodes.size()));
+  assert((Opcodes.size() % 4) == 0 &&
+         "Unwind opcode size for __aeabi_cpp_unwind_pr0 must be multiple of 4");
+  for (unsigned I = 0; I != Opcodes.size(); I += 4) {
+    uint64_t Intval = Opcodes[I] |
+                      Opcodes[I + 1] << 8 |
+                      Opcodes[I + 2] << 16 |
+                      Opcodes[I + 3] << 24;
+    EmitIntValue(Intval, 4);
+  }
 
   // According to ARM EHABI section 9.2, if the __aeabi_unwind_cpp_pr1() or
   // __aeabi_unwind_cpp_pr2() is used, then the handler data must be emitted
@@ -1283,24 +1362,30 @@ void ARMELFStreamer::emitUnwindRaw(int64_t Offset,
 
 namespace llvm {
 
-MCStreamer *createMCAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
-                                bool isVerboseAsm, bool useCFI,
-                                bool useDwarfDirectory,
-                                MCInstPrinter *InstPrint, MCCodeEmitter *CE,
-                                MCAsmBackend *TAB, bool ShowInst) {
-  MCStreamer *S =
-      llvm::createAsmStreamer(Ctx, OS, isVerboseAsm, useCFI, useDwarfDirectory,
-                              InstPrint, CE, TAB, ShowInst);
-  new ARMTargetAsmStreamer(*S, OS, *InstPrint, isVerboseAsm);
-  return S;
+MCTargetStreamer *createARMTargetAsmStreamer(MCStreamer &S,
+                                             formatted_raw_ostream &OS,
+                                             MCInstPrinter *InstPrint,
+                                             bool isVerboseAsm) {
+  return new ARMTargetAsmStreamer(S, OS, *InstPrint, isVerboseAsm);
 }
 
-  MCELFStreamer* createARMELFStreamer(MCContext &Context, MCAsmBackend &TAB,
-                                      raw_ostream &OS, MCCodeEmitter *Emitter,
-                                      bool RelaxAll, bool NoExecStack,
-                                      bool IsThumb) {
+MCTargetStreamer *createARMNullTargetStreamer(MCStreamer &S) {
+  return new ARMTargetStreamer(S);
+}
+
+MCTargetStreamer *createARMObjectTargetStreamer(MCStreamer &S,
+                                                const MCSubtargetInfo &STI) {
+  Triple TT(STI.getTargetTriple());
+  if (TT.getObjectFormat() == Triple::ELF)
+    return new ARMTargetELFStreamer(S);
+  return new ARMTargetStreamer(S);
+}
+
+MCELFStreamer *createARMELFStreamer(MCContext &Context, MCAsmBackend &TAB,
+                                    raw_pwrite_stream &OS,
+                                    MCCodeEmitter *Emitter, bool RelaxAll,
+                                    bool IsThumb) {
     ARMELFStreamer *S = new ARMELFStreamer(Context, TAB, OS, Emitter, IsThumb);
-    new ARMTargetELFStreamer(*S);
     // FIXME: This should eventually end up somewhere else where more
     // intelligent flag decisions can be made. For now we are just maintaining
     // the status quo for ARM and setting EF_ARM_EABI_VER5 as the default.
@@ -1308,8 +1393,6 @@ MCStreamer *createMCAsmStreamer(MCContext &Ctx, formatted_raw_ostream &OS,
 
     if (RelaxAll)
       S->getAssembler().setRelaxAll(true);
-    if (NoExecStack)
-      S->getAssembler().setNoExecStack(true);
     return S;
   }
 

@@ -24,7 +24,7 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/YAMLParser.h"
 #include "llvm/Support/raw_ostream.h"
-#include "llvm/Support/system_error.h"
+#include <system_error>
 
 namespace llvm {
 namespace yaml {
@@ -447,6 +447,7 @@ public:
 
   virtual void beginEnumScalar() = 0;
   virtual bool matchEnumScalar(const char*, bool) = 0;
+  virtual bool matchEnumFallback() = 0;
   virtual void endEnumScalar() = 0;
 
   virtual bool beginBitSetScalar(bool &) = 0;
@@ -472,6 +473,16 @@ public:
     }
   }
 
+  template <typename FBT, typename T>
+  void enumFallback(T &Val) {
+    if ( matchEnumFallback() ) {
+      // FIXME: Force integral conversion to allow strong typedefs to convert.
+      FBT Res = (uint64_t)Val;
+      yamlize(*this, Res, true);
+      Val = (uint64_t)Res;
+    }
+  }
+
   template <typename T>
   void bitSetCase(T &Val, const char* Str, const T ConstVal) {
     if ( bitSetMatch(Str, outputting() && (Val & ConstVal) == ConstVal) ) {
@@ -485,6 +496,19 @@ public:
     if ( bitSetMatch(Str, outputting() && (Val & ConstVal) == ConstVal) ) {
       Val = Val | ConstVal;
     }
+  }
+
+  template <typename T>
+  void maskedBitSetCase(T &Val, const char *Str, T ConstVal, T Mask) {
+    if (bitSetMatch(Str, outputting() && (Val & Mask) == ConstVal))
+      Val = Val | ConstVal;
+  }
+
+  template <typename T>
+  void maskedBitSetCase(T &Val, const char *Str, uint32_t ConstVal,
+                        uint32_t Mask) {
+    if (bitSetMatch(Str, outputting() && (Val & Mask) == ConstVal))
+      Val = Val | ConstVal;
   }
 
   void *getContext();
@@ -519,7 +543,7 @@ public:
   void mapOptional(const char* Key, T& Val, const T& Default) {
     this->processKeyWithDefault(Key, Val, Default, false);
   }
-  
+
 private:
   template <typename T>
   void processKeyWithDefault(const char *Key, Optional<T> &Val,
@@ -693,7 +717,7 @@ struct ScalarTraits<StringRef> {
   static StringRef input(StringRef, void*, StringRef &);
   static bool mustQuote(StringRef S) { return needsQuotes(S); }
 };
- 
+
 template<>
 struct ScalarTraits<std::string> {
   static void output(const std::string &, void*, llvm::raw_ostream &);
@@ -864,10 +888,10 @@ public:
         void *Ctxt = nullptr,
         SourceMgr::DiagHandlerTy DiagHandler = nullptr,
         void *DiagHandlerCtxt = nullptr);
-  ~Input();
+  ~Input() override;
 
   // Check if there was an syntax or semantic error during parsing.
-  llvm::error_code error();
+  std::error_code error();
 
 private:
   bool outputting() override;
@@ -886,6 +910,7 @@ private:
   void endFlowSequence() override;
   void beginEnumScalar() override;
   bool matchEnumScalar(const char*, bool) override;
+  bool matchEnumFallback() override;
   void endEnumScalar() override;
   bool beginBitSetScalar(bool &) override;
   bool bitSetMatch(const char *, bool ) override;
@@ -930,16 +955,17 @@ private:
   };
 
   class MapHNode : public HNode {
+    void anchor() override;
+
   public:
     MapHNode(Node *n) : HNode(n) { }
-    virtual ~MapHNode();
 
     static inline bool classof(const HNode *n) {
       return MappingNode::classof(n->_node);
     }
     static inline bool classof(const MapHNode *) { return true; }
 
-    typedef llvm::StringMap<HNode*> NameToNode;
+    typedef llvm::StringMap<std::unique_ptr<HNode>> NameToNode;
 
     bool isValidKey(StringRef key);
 
@@ -948,19 +974,20 @@ private:
   };
 
   class SequenceHNode : public HNode {
+    void anchor() override;
+
   public:
     SequenceHNode(Node *n) : HNode(n) { }
-    virtual ~SequenceHNode();
 
     static inline bool classof(const HNode *n) {
       return SequenceNode::classof(n->_node);
     }
     static inline bool classof(const SequenceHNode *) { return true; }
 
-    std::vector<HNode*> Entries;
+    std::vector<std::unique_ptr<HNode>> Entries;
   };
 
-  Input::HNode *createHNodes(Node *node);
+  std::unique_ptr<Input::HNode> createHNodes(Node *node);
   void setError(HNode *hnode, const Twine &message);
   void setError(Node *node, const Twine &message);
 
@@ -969,13 +996,13 @@ public:
   // These are only used by operator>>. They could be private
   // if those templated things could be made friends.
   bool setCurrentDocument();
-  void nextDocument();
+  bool nextDocument();
 
 private:
   llvm::SourceMgr                     SrcMgr; // must be before Strm
   std::unique_ptr<llvm::yaml::Stream> Strm;
   std::unique_ptr<HNode>              TopNode;
-  llvm::error_code                    EC;
+  std::error_code                     EC;
   llvm::BumpPtrAllocator              StringAllocator;
   llvm::yaml::document_iterator       DocIterator;
   std::vector<bool>                   BitValuesUsed;
@@ -993,7 +1020,7 @@ private:
 class Output : public IO {
 public:
   Output(llvm::raw_ostream &, void *Ctxt=nullptr);
-  virtual ~Output();
+  ~Output() override;
 
   bool outputting() override;
   bool mapTag(StringRef, bool) override;
@@ -1011,6 +1038,7 @@ public:
   void endFlowSequence() override;
   void beginEnumScalar() override;
   bool matchEnumScalar(const char*, bool) override;
+  bool matchEnumFallback() override;
   void endEnumScalar() override;
   bool beginBitSetScalar(bool &) override;
   bool bitSetMatch(const char *, bool ) override;

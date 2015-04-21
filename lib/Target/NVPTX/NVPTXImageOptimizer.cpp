@@ -16,11 +16,11 @@
 
 #include "NVPTX.h"
 #include "NVPTXUtilities.h"
+#include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Pass.h"
-#include "llvm/Analysis/ConstantFolding.h"
 
 using namespace llvm;
 
@@ -33,7 +33,7 @@ private:
 public:
   NVPTXImageOptimizer();
 
-  bool runOnFunction(Function &F);
+  bool runOnFunction(Function &F) override;
 
 private:
   bool replaceIsTypePSampler(Instruction &I);
@@ -146,7 +146,7 @@ bool NVPTXImageOptimizer::replaceIsTypePTexture(Instruction &I) {
 void NVPTXImageOptimizer::replaceWith(Instruction *From, ConstantInt *To) {
   // We implement "poor man's DCE" here to make sure any code that is no longer
   // live is actually unreachable and can be trivially eliminated by the
-  // unreachable block elimiation pass.
+  // unreachable block elimination pass.
   for (CallInst::use_iterator UI = From->use_begin(), UE = From->use_end();
        UI != UE; ++UI) {
     if (BranchInst *BI = dyn_cast<BranchInst>(*UI)) {

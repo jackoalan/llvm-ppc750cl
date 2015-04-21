@@ -19,8 +19,8 @@
 
 #include "NVPTX.h"
 #include "llvm/IR/GlobalVariable.h"
+#include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
-#include "llvm/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
 #include <string>
 
@@ -33,7 +33,7 @@ public:
   static char ID;
   NVPTXAssignValidGlobalNames() : ModulePass(ID) {}
 
-  virtual bool runOnModule(Module &M);
+  bool runOnModule(Module &M) override;
 
   /// \brief Clean up the name to remove symbols invalid in PTX.
   std::string cleanUpName(StringRef Name);

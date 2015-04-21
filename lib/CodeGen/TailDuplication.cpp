@@ -31,6 +31,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetInstrInfo.h"
 #include "llvm/Target/TargetRegisterInfo.h"
+#include "llvm/Target/TargetSubtargetInfo.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "tailduplication"
@@ -135,8 +136,8 @@ bool TailDuplicatePass::runOnMachineFunction(MachineFunction &MF) {
   if (skipOptnoneFunction(*MF.getFunction()))
     return false;
 
-  TII = MF.getTarget().getInstrInfo();
-  TRI = MF.getTarget().getRegisterInfo();
+  TII = MF.getSubtarget().getInstrInfo();
+  TRI = MF.getSubtarget().getRegisterInfo();
   MRI = &MF.getRegInfo();
   MMI = getAnalysisIfAvailable<MachineModuleInfo>();
   MBPI = &getAnalysis<MachineBranchProbabilityInfo>();
@@ -364,9 +365,7 @@ static unsigned getPHISrcRegOpIdx(MachineInstr *MI, MachineBasicBlock *SrcBB) {
 // block (which is why we need to copy the information).
 static void getRegsUsedByPHIs(const MachineBasicBlock &BB,
                               DenseSet<unsigned> *UsedByPhi) {
-  for(MachineBasicBlock::const_iterator I = BB.begin(), E = BB.end();
-      I != E; ++I) {
-    const MachineInstr &MI = *I;
+  for (const auto &MI : BB) {
     if (!MI.isPHI())
       break;
     for (unsigned i = 1, e = MI.getNumOperands(); i != e; i += 2) {
@@ -561,8 +560,7 @@ TailDuplicatePass::shouldTailDuplicate(const MachineFunction &MF,
   // compensate for the duplication.
   unsigned MaxDuplicateCount;
   if (TailDuplicateSize.getNumOccurrences() == 0 &&
-      MF.getFunction()->getAttributes().
-        hasAttribute(AttributeSet::FunctionIndex, Attribute::OptimizeForSize))
+      MF.getFunction()->hasFnAttribute(Attribute::OptimizeForSize))
     MaxDuplicateCount = 1;
   else
     MaxDuplicateCount = TailDuplicateSize;
@@ -800,11 +798,9 @@ TailDuplicatePass::TailDuplicate(MachineBasicBlock *TailBB,
       RS->enterBasicBlock(PredBB);
       if (!PredBB->empty())
         RS->forward(std::prev(PredBB->end()));
-      BitVector RegsLiveAtExit(TRI->getNumRegs());
-      RS->getRegsUsed(RegsLiveAtExit, false);
       for (MachineBasicBlock::livein_iterator I = TailBB->livein_begin(),
              E = TailBB->livein_end(); I != E; ++I) {
-        if (!RegsLiveAtExit[*I])
+        if (!RS->isRegUsed(*I, false))
           // If a register is previously livein to the tail but it's not live
           // at the end of predecessor BB, then it should be added to its
           // livein list.

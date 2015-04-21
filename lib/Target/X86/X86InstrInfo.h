@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef X86INSTRUCTIONINFO_H
-#define X86INSTRUCTIONINFO_H
+#ifndef LLVM_LIB_TARGET_X86_X86INSTRINFO_H
+#define LLVM_LIB_TARGET_X86_X86INSTRINFO_H
 
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "X86RegisterInfo.h"
@@ -24,7 +24,7 @@
 
 namespace llvm {
   class X86RegisterInfo;
-  class X86TargetMachine;
+  class X86Subtarget;
 
 namespace X86 {
   // X86 specific condition code. These correspond to X86_*_COND in
@@ -46,6 +46,7 @@ namespace X86 {
     COND_O  = 13,
     COND_P  = 14,
     COND_S  = 15,
+    LAST_VALID_COND = COND_S,
 
     // Artificial condition codes. These are used by AnalyzeBranch
     // to indicate a block terminated with two conditional branches to
@@ -61,12 +62,21 @@ namespace X86 {
   // Turn condition code into conditional branch opcode.
   unsigned GetCondBranchFromCond(CondCode CC);
 
+  /// \brief Return a set opcode for the given condition and whether it has
+  /// a memory operand.
+  unsigned getSETFromCond(CondCode CC, bool HasMemoryOperand = false);
+
+  /// \brief Return a cmov opcode for the given condition, register size in
+  /// bytes, and operand type.
+  unsigned getCMovFromCond(CondCode CC, unsigned RegBytes,
+                           bool HasMemoryOperand = false);
+
   // Turn CMov opcode into condition code.
   CondCode getCondFromCMovOpc(unsigned Opc);
 
   /// GetOppositeBranchCondition - Return the inverse of the specified cond,
   /// e.g. turning COND_E to COND_NE.
-  CondCode GetOppositeBranchCondition(X86::CondCode CC);
+  CondCode GetOppositeBranchCondition(CondCode CC);
 }  // end namespace X86;
 
 
@@ -129,7 +139,7 @@ inline static bool isMem(const MachineInstr *MI, unsigned Op) {
 }
 
 class X86InstrInfo final : public X86GenInstrInfo {
-  X86TargetMachine &TM;
+  X86Subtarget &Subtarget;
   const X86RegisterInfo RI;
 
   /// RegOp2MemOpTable3Addr, RegOp2MemOpTable0, RegOp2MemOpTable1,
@@ -142,6 +152,7 @@ class X86InstrInfo final : public X86GenInstrInfo {
   RegOp2MemOpTableType RegOp2MemOpTable1;
   RegOp2MemOpTableType RegOp2MemOpTable2;
   RegOp2MemOpTableType RegOp2MemOpTable3;
+  RegOp2MemOpTableType RegOp2MemOpTable4;
 
   /// MemOp2RegOpTable - Load / store unfolding opcode map.
   ///
@@ -156,13 +167,18 @@ class X86InstrInfo final : public X86GenInstrInfo {
   virtual void anchor();
 
 public:
-  explicit X86InstrInfo(X86TargetMachine &tm);
+  explicit X86InstrInfo(X86Subtarget &STI);
 
   /// getRegisterInfo - TargetInstrInfo is a superset of MRegister info.  As
   /// such, whenever a client has an instance of instruction info, it should
   /// always be able to get register info as well (through this method).
   ///
   const X86RegisterInfo &getRegisterInfo() const { return RI; }
+
+  /// getSPAdjust - This returns the stack pointer adjustment made by
+  /// this instruction. For x86, we need to handle more complex call
+  /// sequences involving PUSHes.
+  int getSPAdjust(const MachineInstr *MI) const override;
 
   /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"
   /// extension instruction. That is, it's like a copy where it's legal for the
@@ -289,23 +305,21 @@ public:
   /// folding and return true, otherwise it should return false.  If it folds
   /// the instruction, it is likely that the MachineInstruction the iterator
   /// references has been changed.
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                      MachineInstr* MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
+  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
+                                      ArrayRef<unsigned> Ops,
                                       int FrameIndex) const override;
 
   /// foldMemoryOperand - Same as the previous version except it allows folding
   /// of any load and store from / to any address, not just from a specific
   /// stack slot.
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                      MachineInstr* MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
-                                      MachineInstr* LoadMI) const override;
+  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
+                                      ArrayRef<unsigned> Ops,
+                                      MachineInstr *LoadMI) const override;
 
   /// canFoldMemoryOperand - Returns true if the specified load / store is
   /// folding is possible.
-  bool canFoldMemoryOperand(const MachineInstr*,
-                            const SmallVectorImpl<unsigned> &) const override;
+  bool canFoldMemoryOperand(const MachineInstr *,
+                            ArrayRef<unsigned>) const override;
 
   /// unfoldMemoryOperand - Separate a single instruction which folded a load or
   /// a store or a load and a store into two or more instruction. If this is
@@ -325,7 +339,7 @@ public:
   /// value.
   unsigned getOpcodeAfterMemoryUnfold(unsigned Opc,
                               bool UnfoldLoad, bool UnfoldStore,
-                              unsigned *LoadRegIndex = 0) const override;
+                              unsigned *LoadRegIndex = nullptr) const override;
 
   /// areLoadsFromSameBasePtr - This is used by the pre-regalloc scheduler
   /// to determine if two loads are loading from the same base address. It
@@ -359,6 +373,13 @@ public:
   /// instruction that defines the specified register class.
   bool isSafeToMoveRegClassDefs(const TargetRegisterClass *RC) const override;
 
+  /// isSafeToClobberEFLAGS - Return true if it's safe insert an instruction tha
+  /// would clobber the EFLAGS condition register. Note the result may be
+  /// conservative. If it cannot definitely determine the safety after visiting
+  /// a few instructions in each direction it assumes it's not safe.
+  bool isSafeToClobberEFLAGS(MachineBasicBlock &MBB,
+                             MachineBasicBlock::iterator I) const;
+
   static bool isX86_64ExtendedReg(const MachineOperand &MO) {
     if (!MO.isReg()) return false;
     return X86II::isX86_64ExtendedReg(MO.getReg());
@@ -383,11 +404,19 @@ public:
   void breakPartialRegDependency(MachineBasicBlock::iterator MI, unsigned OpNum,
                                  const TargetRegisterInfo *TRI) const override;
 
-  MachineInstr* foldMemoryOperandImpl(MachineFunction &MF,
-                                      MachineInstr* MI,
+  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
                                       unsigned OpNum,
-                                      const SmallVectorImpl<MachineOperand> &MOs,
-                                      unsigned Size, unsigned Alignment) const;
+                                      ArrayRef<MachineOperand> MOs,
+                                      unsigned Size, unsigned Alignment,
+                                      bool AllowCommute) const;
+
+  void
+  getUnconditionalBranch(MCInst &Branch,
+                         const MCSymbolRefExpr *BranchTarget) const override;
+
+  void getTrap(MCInst &MI) const override;
+
+  unsigned getJumpInstrTableEntryBound() const override;
 
   bool isHighLatencyDef(int opc) const override;
 

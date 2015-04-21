@@ -3,10 +3,10 @@ target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f3
 target triple = "x86_64-unknown-linux-gnu"
 define i32 @read_4_bytes(i32* %a) sanitize_address {
 entry:
-  %tmp1 = load i32* %a, align 4
+  %tmp1 = load i32, i32* %a, align 4
   ret i32 %tmp1
 }
-; CHECK: @read_4_bytes
+; CHECK-LABEL: @read_4_bytes
 ; CHECK-NOT: ret
 ; CHECK: lshr {{.*}} 3
 ; Check for ASAN's Offset for 64-bit (7fff8000)
@@ -19,8 +19,10 @@ entry:
   ret void
 }
 
-; CHECK: @example_atomicrmw
+; CHECK-LABEL: @example_atomicrmw
 ; CHECK: lshr {{.*}} 3
+; CHECK: __asan_report_store8
+; CHECK-NOT: __asan_report
 ; CHECK: atomicrmw
 ; CHECK: ret
 
@@ -30,7 +32,9 @@ entry:
   ret void
 }
 
-; CHECK: @example_cmpxchg
+; CHECK-LABEL: @example_cmpxchg
 ; CHECK: lshr {{.*}} 3
+; CHECK: __asan_report_store8
+; CHECK-NOT: __asan_report
 ; CHECK: cmpxchg
 ; CHECK: ret

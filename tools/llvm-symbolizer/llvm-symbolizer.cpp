@@ -19,7 +19,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/ManagedStatic.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/PrettyStackTrace.h"
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/raw_ostream.h"
@@ -35,10 +37,15 @@ ClUseSymbolTable("use-symbol-table", cl::init(true),
                  cl::desc("Prefer names in symbol table to names "
                           "in debug info"));
 
-static cl::opt<bool>
-ClPrintFunctions("functions", cl::init(true),
-                 cl::desc("Print function names as well as line "
-                          "information for a given address"));
+static cl::opt<FunctionNameKind> ClPrintFunctions(
+    "functions", cl::init(FunctionNameKind::LinkageName),
+    cl::desc("Print function name for a given address:"),
+    cl::values(clEnumValN(FunctionNameKind::None, "none", "omit function name"),
+               clEnumValN(FunctionNameKind::ShortName, "short",
+                          "print short function name"),
+               clEnumValN(FunctionNameKind::LinkageName, "linkage",
+                          "print function linkage name"),
+               clEnumValEnd));
 
 static cl::opt<bool>
 ClPrintInlining("inlining", cl::init(true),
@@ -55,6 +62,11 @@ static cl::opt<std::string>
 ClBinaryName("obj", cl::init(""),
              cl::desc("Path to object file to be symbolized (if not provided, "
                       "object file should be specified for each input line)"));
+
+static cl::list<std::string>
+ClDsymHint("dsym-hint", cl::ZeroOrMore,
+           cl::desc("Path to .dSYM bundles to search for debug info for the "
+                    "object files"));
 
 static bool parseCommand(bool &IsData, std::string &ModuleName,
                          uint64_t &ModuleOffset) {
@@ -114,6 +126,14 @@ int main(int argc, char **argv) {
   cl::ParseCommandLineOptions(argc, argv, "llvm-symbolizer\n");
   LLVMSymbolizer::Options Opts(ClUseSymbolTable, ClPrintFunctions,
                                ClPrintInlining, ClDemangle, ClDefaultArch);
+  for (const auto &hint : ClDsymHint) {
+    if (sys::path::extension(hint) == ".dSYM") {
+      Opts.DsymHints.push_back(hint);
+    } else {
+      errs() << "Warning: invalid dSYM hint: \"" << hint <<
+                "\" (must have the '.dSYM' extension).\n";
+    }
+  }
   LLVMSymbolizer Symbolizer(Opts);
 
   bool IsData = false;

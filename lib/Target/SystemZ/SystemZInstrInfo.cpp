@@ -40,9 +40,9 @@ static bool isHighReg(unsigned int Reg) {
 // Pin the vtable to this file.
 void SystemZInstrInfo::anchor() {}
 
-SystemZInstrInfo::SystemZInstrInfo(SystemZTargetMachine &tm)
+SystemZInstrInfo::SystemZInstrInfo(SystemZSubtarget &sti)
   : SystemZGenInstrInfo(SystemZ::ADJCALLSTACKDOWN, SystemZ::ADJCALLSTACKUP),
-    RI(tm), TM(tm) {
+    RI(), STI(sti) {
 }
 
 // MI is a 128-bit load or store.  Split it into two 64-bit loads or stores,
@@ -488,7 +488,7 @@ SystemZInstrInfo::optimizeCompareInstr(MachineInstr *Compare,
   bool IsLogical = (Compare->getDesc().TSFlags & SystemZII::IsLogical) != 0;
   if (Value == 0 &&
       !IsLogical &&
-      removeIPMBasedCompare(Compare, SrcReg, MRI, TM.getRegisterInfo()))
+      removeIPMBasedCompare(Compare, SrcReg, MRI, &RI))
     return true;
   return false;
 }
@@ -505,7 +505,7 @@ static unsigned getConditionalMove(unsigned Opcode) {
 
 bool SystemZInstrInfo::isPredicable(MachineInstr *MI) const {
   unsigned Opcode = MI->getOpcode();
-  if (TM.getSubtargetImpl()->hasLoadStoreOnCond() &&
+  if (STI.hasLoadStoreOnCond() &&
       getConditionalMove(Opcode))
     return true;
   return false;
@@ -537,7 +537,7 @@ PredicateInstruction(MachineInstr *MI,
   unsigned CCMask = Pred[1].getImm();
   assert(CCMask > 0 && CCMask < 15 && "Invalid predicate");
   unsigned Opcode = MI->getOpcode();
-  if (TM.getSubtargetImpl()->hasLoadStoreOnCond()) {
+  if (STI.hasLoadStoreOnCond()) {
     if (unsigned CondOpcode = getConditionalMove(Opcode)) {
       MI->setDesc(get(CondOpcode));
       MachineInstrBuilder(*MI->getParent()->getParent(), MI)
@@ -633,7 +633,7 @@ struct LogicOp {
   LogicOp(unsigned regSize, unsigned immLSB, unsigned immSize)
     : RegSize(regSize), ImmLSB(immLSB), ImmSize(immSize) {}
 
-  operator bool() const { return RegSize; }
+  explicit operator bool() const { return RegSize; }
 
   unsigned RegSize, ImmLSB, ImmSize;
 };
@@ -685,7 +685,7 @@ SystemZInstrInfo::convertToThreeAddress(MachineFunction::iterator &MFI,
   // We prefer to keep the two-operand form where possible both
   // because it tends to be shorter and because some instructions
   // have memory forms that can be used during spilling.
-  if (TM.getSubtargetImpl()->hasDistinctOps()) {
+  if (STI.hasDistinctOps()) {
     MachineOperand &Dest = MI->getOperand(0);
     MachineOperand &Src = MI->getOperand(1);
     unsigned DestReg = Dest.getReg();
@@ -723,9 +723,12 @@ SystemZInstrInfo::convertToThreeAddress(MachineFunction::iterator &MFI,
     unsigned Start, End;
     if (isRxSBGMask(Imm, And.RegSize, Start, End)) {
       unsigned NewOpcode;
-      if (And.RegSize == 64)
+      if (And.RegSize == 64) {
         NewOpcode = SystemZ::RISBG;
-      else {
+        // Prefer RISBGN if available, since it does not clobber CC.
+        if (STI.hasMiscellaneousExtensions())
+          NewOpcode = SystemZ::RISBGN;
+      } else {
         NewOpcode = SystemZ::RISBMux;
         Start &= 31;
         End &= 31;
@@ -743,11 +746,10 @@ SystemZInstrInfo::convertToThreeAddress(MachineFunction::iterator &MFI,
   return nullptr;
 }
 
-MachineInstr *
-SystemZInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
-                                        MachineInstr *MI,
-                                        const SmallVectorImpl<unsigned> &Ops,
-                                        int FrameIndex) const {
+MachineInstr *SystemZInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
+                                                      MachineInstr *MI,
+                                                      ArrayRef<unsigned> Ops,
+                                                      int FrameIndex) const {
   const MachineFrameInfo *MFI = MF.getFrameInfo();
   unsigned Size = MFI->getObjectSize(FrameIndex);
   unsigned Opcode = MI->getOpcode();
@@ -862,9 +864,9 @@ SystemZInstrInfo::foldMemoryOperandImpl(MachineFunction &MF,
 }
 
 MachineInstr *
-SystemZInstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr* MI,
-                                        const SmallVectorImpl<unsigned> &Ops,
-                                        MachineInstr* LoadMI) const {
+SystemZInstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
+                                        ArrayRef<unsigned> Ops,
+                                        MachineInstr *LoadMI) const {
   return nullptr;
 }
 
@@ -1147,17 +1149,22 @@ unsigned SystemZInstrInfo::getOpcodeForOffset(unsigned Opcode,
 
 unsigned SystemZInstrInfo::getLoadAndTest(unsigned Opcode) const {
   switch (Opcode) {
-  case SystemZ::L:    return SystemZ::LT;
-  case SystemZ::LY:   return SystemZ::LT;
-  case SystemZ::LG:   return SystemZ::LTG;
-  case SystemZ::LGF:  return SystemZ::LTGF;
-  case SystemZ::LR:   return SystemZ::LTR;
-  case SystemZ::LGFR: return SystemZ::LTGFR;
-  case SystemZ::LGR:  return SystemZ::LTGR;
-  case SystemZ::LER:  return SystemZ::LTEBR;
-  case SystemZ::LDR:  return SystemZ::LTDBR;
-  case SystemZ::LXR:  return SystemZ::LTXBR;
-  default:            return 0;
+  case SystemZ::L:      return SystemZ::LT;
+  case SystemZ::LY:     return SystemZ::LT;
+  case SystemZ::LG:     return SystemZ::LTG;
+  case SystemZ::LGF:    return SystemZ::LTGF;
+  case SystemZ::LR:     return SystemZ::LTR;
+  case SystemZ::LGFR:   return SystemZ::LTGFR;
+  case SystemZ::LGR:    return SystemZ::LTGR;
+  case SystemZ::LER:    return SystemZ::LTEBR;
+  case SystemZ::LDR:    return SystemZ::LTDBR;
+  case SystemZ::LXR:    return SystemZ::LTXBR;
+  // On zEC12 we prefer to use RISBGN.  But if there is a chance to
+  // actually use the condition code, we may turn it back into RISGB.
+  // Note that RISBG is not really a "load-and-test" instruction,
+  // but sets the same condition code values, so is OK to use here.
+  case SystemZ::RISBGN: return SystemZ::RISBG;
+  default:              return 0;
   }
 }
 

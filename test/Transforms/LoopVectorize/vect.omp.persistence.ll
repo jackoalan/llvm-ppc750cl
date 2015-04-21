@@ -1,4 +1,4 @@
-; RUN: opt < %s -O2 -force-vector-unroll=2 -force-vector-width=4 -debug-only=loop-vectorize -stats -S 2>&1 | FileCheck %s
+; RUN: opt < %s -O2 -force-vector-interleave=2 -force-vector-width=4 -debug-only=loop-vectorize -stats -S 2>&1 | FileCheck %s
 ; REQUIRES: asserts
 
 ; Loop from "rotated"
@@ -18,7 +18,7 @@ target triple = "x86_64-unknown-linux-gnu"
 ;
 ; Test #1
 ;
-; Ensure that "llvm.vectorizer.enable" metadata was not lost prior to LoopVectorize pass.
+; Ensure that "llvm.loop.vectorize.enable" metadata was not lost prior to LoopVectorize pass.
 ; In past LoopRotate was clearing that metadata.
 ;
 ; The source C code is:
@@ -45,13 +45,13 @@ for.header:
 for.body:
 
   %0 = add nsw i64 %indvars.iv, -5
-  %arrayidx = getelementptr inbounds float* %a, i64 %0
-  %1 = load float* %arrayidx, align 4, !llvm.mem.parallel_loop_access !1
+  %arrayidx = getelementptr inbounds float, float* %a, i64 %0
+  %1 = load float, float* %arrayidx, align 4, !llvm.mem.parallel_loop_access !1
   %2 = add nsw i64 %indvars.iv, 2
-  %arrayidx2 = getelementptr inbounds float* %a, i64 %2
-  %3 = load float* %arrayidx2, align 4, !llvm.mem.parallel_loop_access !1
+  %arrayidx2 = getelementptr inbounds float, float* %a, i64 %2
+  %3 = load float, float* %arrayidx2, align 4, !llvm.mem.parallel_loop_access !1
   %mul = fmul float %1, %3
-  %arrayidx4 = getelementptr inbounds float* %a, i64 %indvars.iv
+  %arrayidx4 = getelementptr inbounds float, float* %a, i64 %indvars.iv
   store float %mul, float* %arrayidx4, align 4, !llvm.mem.parallel_loop_access !1
 
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
@@ -61,13 +61,13 @@ for.end:
   ret void
 }
 
-!1 = metadata !{metadata !1, metadata !2}
-!2 = metadata !{metadata !"llvm.vectorizer.enable", i1 true}
+!1 = !{!1, !2}
+!2 = !{!"llvm.loop.vectorize.enable", i1 true}
 
 ;
 ; Test #2
 ;
-; Ensure that "llvm.vectorizer.enable" metadata was not lost even
+; Ensure that "llvm.loop.vectorize.enable" metadata was not lost even
 ; if loop was not rotated (see http://reviews.llvm.org/D3348#comment-4).
 ;
 define i32 @nonrotated(i32 %a) {
@@ -84,5 +84,5 @@ return:
   ret i32 0
 }
 
-!3 = metadata !{metadata !3, metadata !4}
-!4 = metadata !{metadata !"llvm.vectorizer.enable", i1 true}
+!3 = !{!3, !4}
+!4 = !{!"llvm.loop.vectorize.enable", i1 true}

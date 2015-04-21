@@ -37,8 +37,8 @@ STATISTIC(MCNumCPRelocations, "Number of constant pool relocations created.");
 
 namespace {
 class ARMMCCodeEmitter : public MCCodeEmitter {
-  ARMMCCodeEmitter(const ARMMCCodeEmitter &) LLVM_DELETED_FUNCTION;
-  void operator=(const ARMMCCodeEmitter &) LLVM_DELETED_FUNCTION;
+  ARMMCCodeEmitter(const ARMMCCodeEmitter &) = delete;
+  void operator=(const ARMMCCodeEmitter &) = delete;
   const MCInstrInfo &MCII;
   const MCContext &CTX;
   bool IsLittleEndian;
@@ -48,7 +48,7 @@ public:
     : MCII(mcii), CTX(ctx), IsLittleEndian(IsLittle) {
   }
 
-  ~ARMMCCodeEmitter() {}
+  ~ARMMCCodeEmitter() override {}
 
   bool isThumb(const MCSubtargetInfo &STI) const {
     return (STI.getFeatureBits() & ARM::ModeThumb) != 0;
@@ -304,6 +304,28 @@ public:
     return Binary;
   }
 
+  unsigned getModImmOpValue(const MCInst &MI, unsigned Op,
+                            SmallVectorImpl<MCFixup> &Fixups,
+                            const MCSubtargetInfo &ST) const {
+    const MCOperand &MO = MI.getOperand(Op);
+
+    // Support for fixups (MCFixup)
+    if (MO.isExpr()) {
+      const MCExpr *Expr = MO.getExpr();
+      // In instruction code this value always encoded as lowest 12 bits,
+      // so we don't have to perform any specific adjustments.
+      // Due to requirements of relocatable records we have to use FK_Data_4.
+      // See ARMELFObjectWriter::ExplicitRelSym and
+      //     ARMELFObjectWriter::GetRelocTypeInner for more details.
+      MCFixupKind Kind = MCFixupKind(FK_Data_4);
+      Fixups.push_back(MCFixup::Create(0, Expr, Kind, MI.getLoc()));
+      return 0;
+    }
+
+    // Immediate is already in its encoded format
+    return MO.getImm();
+  }
+
   /// getT2SOImmOpValue - Return an encoded 12-bit shifted-immediate value.
   unsigned getT2SOImmOpValue(const MCInst &MI, unsigned Op,
                            SmallVectorImpl<MCFixup> &Fixups,
@@ -419,14 +441,12 @@ public:
 
 MCCodeEmitter *llvm::createARMLEMCCodeEmitter(const MCInstrInfo &MCII,
                                               const MCRegisterInfo &MRI,
-                                              const MCSubtargetInfo &STI,
                                               MCContext &Ctx) {
   return new ARMMCCodeEmitter(MCII, Ctx, true);
 }
 
 MCCodeEmitter *llvm::createARMBEMCCodeEmitter(const MCInstrInfo &MCII,
                                               const MCRegisterInfo &MRI,
-                                              const MCSubtargetInfo &STI,
                                               MCContext &Ctx) {
   return new ARMMCCodeEmitter(MCII, Ctx, false);
 }
@@ -1029,9 +1049,6 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
     switch (ARM16Expr->getKind()) {
     default: llvm_unreachable("Unsupported ARMFixup");
     case ARMMCExpr::VK_ARM_HI16:
-      if (Triple(STI.getTargetTriple()).isOSWindows())
-        return 0;
-
       Kind = MCFixupKind(isThumb2(STI) ? ARM::fixup_t2_movt_hi16
                                        : ARM::fixup_arm_movt_hi16);
       break;
@@ -1050,8 +1067,7 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
   // we have a movt or a movw, but that led to misleadingly results.
   // This is now disallowed in the the AsmParser in validateInstruction()
   // so this should never happen.
-  assert(0 && "expression without :upper16: or :lower16:");
-  return 0;
+  llvm_unreachable("expression without :upper16: or :lower16:");
 }
 
 uint32_t ARMMCCodeEmitter::

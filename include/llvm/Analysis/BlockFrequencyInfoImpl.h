@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 //
 // Shared implementation of BlockFrequency for IR and Machine Instructions.
+// See the documentation below for BlockFrequencyInfoImpl for details.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,691 +22,34 @@
 #include "llvm/Support/BlockFrequency.h"
 #include "llvm/Support/BranchProbability.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/ScaledNumber.h"
 #include "llvm/Support/raw_ostream.h"
+#include <deque>
+#include <list>
 #include <string>
 #include <vector>
-#include <list>
 
 #define DEBUG_TYPE "block-freq"
 
-//===----------------------------------------------------------------------===//
-//
-// UnsignedFloat definition.
-//
-// TODO: Make this private to BlockFrequencyInfoImpl or delete.
-//
-//===----------------------------------------------------------------------===//
 namespace llvm {
 
-class UnsignedFloatBase {
-public:
-  static const int32_t MaxExponent = 16383;
-  static const int32_t MinExponent = -16382;
-  static const int DefaultPrecision = 10;
-
-  static void dump(uint64_t D, int16_t E, int Width);
-  static raw_ostream &print(raw_ostream &OS, uint64_t D, int16_t E, int Width,
-                            unsigned Precision);
-  static std::string toString(uint64_t D, int16_t E, int Width,
-                              unsigned Precision);
-  static int countLeadingZeros32(uint32_t N) { return countLeadingZeros(N); }
-  static int countLeadingZeros64(uint64_t N) { return countLeadingZeros(N); }
-  static uint64_t getHalf(uint64_t N) { return (N >> 1) + (N & 1); }
-
-  static std::pair<uint64_t, bool> splitSigned(int64_t N) {
-    if (N >= 0)
-      return std::make_pair(N, false);
-    uint64_t Unsigned = N == INT64_MIN ? UINT64_C(1) << 63 : uint64_t(-N);
-    return std::make_pair(Unsigned, true);
-  }
-  static int64_t joinSigned(uint64_t U, bool IsNeg) {
-    if (U > uint64_t(INT64_MAX))
-      return IsNeg ? INT64_MIN : INT64_MAX;
-    return IsNeg ? -int64_t(U) : int64_t(U);
-  }
-
-  static int32_t extractLg(const std::pair<int32_t, int> &Lg) {
-    return Lg.first;
-  }
-  static int32_t extractLgFloor(const std::pair<int32_t, int> &Lg) {
-    return Lg.first - (Lg.second > 0);
-  }
-  static int32_t extractLgCeiling(const std::pair<int32_t, int> &Lg) {
-    return Lg.first + (Lg.second < 0);
-  }
-
-  static std::pair<uint64_t, int16_t> divide64(uint64_t L, uint64_t R);
-  static std::pair<uint64_t, int16_t> multiply64(uint64_t L, uint64_t R);
-
-  static int compare(uint64_t L, uint64_t R, int Shift) {
-    assert(Shift >= 0);
-    assert(Shift < 64);
-
-    uint64_t L_adjusted = L >> Shift;
-    if (L_adjusted < R)
-      return -1;
-    if (L_adjusted > R)
-      return 1;
-
-    return L > L_adjusted << Shift ? 1 : 0;
-  }
-};
-
-/// \brief Simple representation of an unsigned floating point.
-///
-/// UnsignedFloat is a unsigned floating point number.  It uses simple
-/// saturation arithmetic, and every operation is well-defined for every value.
-///
-/// The number is split into a signed exponent and unsigned digits.  The number
-/// represented is \c getDigits()*2^getExponent().  In this way, the digits are
-/// much like the mantissa in the x87 long double, but there is no canonical
-/// form, so the same number can be represented by many bit representations
-/// (it's always in "denormal" mode).
-///
-/// UnsignedFloat is templated on the underlying integer type for digits, which
-/// is expected to be one of uint64_t, uint32_t, uint16_t or uint8_t.
-///
-/// Unlike builtin floating point types, UnsignedFloat is portable.
-///
-/// Unlike APFloat, UnsignedFloat does not model architecture floating point
-/// behaviour (this should make it a little faster), and implements most
-/// operators (this makes it usable).
-///
-/// UnsignedFloat is totally ordered.  However, there is no canonical form, so
-/// there are multiple representations of most scalars.  E.g.:
-///
-///     UnsignedFloat(8u, 0) == UnsignedFloat(4u, 1)
-///     UnsignedFloat(4u, 1) == UnsignedFloat(2u, 2)
-///     UnsignedFloat(2u, 2) == UnsignedFloat(1u, 3)
-///
-/// UnsignedFloat implements most arithmetic operations.  Precision is kept
-/// where possible.  Uses simple saturation arithmetic, so that operations
-/// saturate to 0.0 or getLargest() rather than under or overflowing.  It has
-/// some extra arithmetic for unit inversion.  0.0/0.0 is defined to be 0.0.
-/// Any other division by 0.0 is defined to be getLargest().
-///
-/// As a convenience for modifying the exponent, left and right shifting are
-/// both implemented, and both interpret negative shifts as positive shifts in
-/// the opposite direction.
-///
-/// Exponents are limited to the range accepted by x87 long double.  This makes
-/// it trivial to add functionality to convert to APFloat (this is already
-/// relied on for the implementation of printing).
-///
-/// The current plan is to gut this and make the necessary parts of it (even
-/// more) private to BlockFrequencyInfo.
-template <class DigitsT> class UnsignedFloat : UnsignedFloatBase {
-public:
-  static_assert(!std::numeric_limits<DigitsT>::is_signed,
-                "only unsigned floats supported");
-
-  typedef DigitsT DigitsType;
-
-private:
-  typedef std::numeric_limits<DigitsType> DigitsLimits;
-
-  static const int Width = sizeof(DigitsType) * 8;
-  static_assert(Width <= 64, "invalid integer width for digits");
-
-private:
-  DigitsType Digits;
-  int16_t Exponent;
-
-public:
-  UnsignedFloat() : Digits(0), Exponent(0) {}
-
-  UnsignedFloat(DigitsType Digits, int16_t Exponent)
-      : Digits(Digits), Exponent(Exponent) {}
-
-private:
-  UnsignedFloat(const std::pair<uint64_t, int16_t> &X)
-      : Digits(X.first), Exponent(X.second) {}
-
-public:
-  static UnsignedFloat getZero() { return UnsignedFloat(0, 0); }
-  static UnsignedFloat getOne() { return UnsignedFloat(1, 0); }
-  static UnsignedFloat getLargest() {
-    return UnsignedFloat(DigitsLimits::max(), MaxExponent);
-  }
-  static UnsignedFloat getFloat(uint64_t N) { return adjustToWidth(N, 0); }
-  static UnsignedFloat getInverseFloat(uint64_t N) {
-    return getFloat(N).invert();
-  }
-  static UnsignedFloat getFraction(DigitsType N, DigitsType D) {
-    return getQuotient(N, D);
-  }
-
-  int16_t getExponent() const { return Exponent; }
-  DigitsType getDigits() const { return Digits; }
-
-  /// \brief Convert to the given integer type.
-  ///
-  /// Convert to \c IntT using simple saturating arithmetic, truncating if
-  /// necessary.
-  template <class IntT> IntT toInt() const;
-
-  bool isZero() const { return !Digits; }
-  bool isLargest() const { return *this == getLargest(); }
-  bool isOne() const {
-    if (Exponent > 0 || Exponent <= -Width)
-      return false;
-    return Digits == DigitsType(1) << -Exponent;
-  }
-
-  /// \brief The log base 2, rounded.
-  ///
-  /// Get the lg of the scalar.  lg 0 is defined to be INT32_MIN.
-  int32_t lg() const { return extractLg(lgImpl()); }
-
-  /// \brief The log base 2, rounded towards INT32_MIN.
-  ///
-  /// Get the lg floor.  lg 0 is defined to be INT32_MIN.
-  int32_t lgFloor() const { return extractLgFloor(lgImpl()); }
-
-  /// \brief The log base 2, rounded towards INT32_MAX.
-  ///
-  /// Get the lg ceiling.  lg 0 is defined to be INT32_MIN.
-  int32_t lgCeiling() const { return extractLgCeiling(lgImpl()); }
-
-  bool operator==(const UnsignedFloat &X) const { return compare(X) == 0; }
-  bool operator<(const UnsignedFloat &X) const { return compare(X) < 0; }
-  bool operator!=(const UnsignedFloat &X) const { return compare(X) != 0; }
-  bool operator>(const UnsignedFloat &X) const { return compare(X) > 0; }
-  bool operator<=(const UnsignedFloat &X) const { return compare(X) <= 0; }
-  bool operator>=(const UnsignedFloat &X) const { return compare(X) >= 0; }
-
-  bool operator!() const { return isZero(); }
-
-  /// \brief Convert to a decimal representation in a string.
-  ///
-  /// Convert to a string.  Uses scientific notation for very large/small
-  /// numbers.  Scientific notation is used roughly for numbers outside of the
-  /// range 2^-64 through 2^64.
-  ///
-  /// \c Precision indicates the number of decimal digits of precision to use;
-  /// 0 requests the maximum available.
-  ///
-  /// As a special case to make debugging easier, if the number is small enough
-  /// to convert without scientific notation and has more than \c Precision
-  /// digits before the decimal place, it's printed accurately to the first
-  /// digit past zero.  E.g., assuming 10 digits of precision:
-  ///
-  ///     98765432198.7654... => 98765432198.8
-  ///      8765432198.7654... =>  8765432198.8
-  ///       765432198.7654... =>   765432198.8
-  ///        65432198.7654... =>    65432198.77
-  ///         5432198.7654... =>     5432198.765
-  std::string toString(unsigned Precision = DefaultPrecision) {
-    return UnsignedFloatBase::toString(Digits, Exponent, Width, Precision);
-  }
-
-  /// \brief Print a decimal representation.
-  ///
-  /// Print a string.  See toString for documentation.
-  raw_ostream &print(raw_ostream &OS,
-                     unsigned Precision = DefaultPrecision) const {
-    return UnsignedFloatBase::print(OS, Digits, Exponent, Width, Precision);
-  }
-  void dump() const { return UnsignedFloatBase::dump(Digits, Exponent, Width); }
-
-  UnsignedFloat &operator+=(const UnsignedFloat &X);
-  UnsignedFloat &operator-=(const UnsignedFloat &X);
-  UnsignedFloat &operator*=(const UnsignedFloat &X);
-  UnsignedFloat &operator/=(const UnsignedFloat &X);
-  UnsignedFloat &operator<<=(int16_t Shift) { shiftLeft(Shift); return *this; }
-  UnsignedFloat &operator>>=(int16_t Shift) { shiftRight(Shift); return *this; }
-
-private:
-  void shiftLeft(int32_t Shift);
-  void shiftRight(int32_t Shift);
-
-  /// \brief Adjust two floats to have matching exponents.
-  ///
-  /// Adjust \c this and \c X to have matching exponents.  Returns the new \c X
-  /// by value.  Does nothing if \a isZero() for either.
-  ///
-  /// The value that compares smaller will lose precision, and possibly become
-  /// \a isZero().
-  UnsignedFloat matchExponents(UnsignedFloat X);
-
-  /// \brief Increase exponent to match another float.
-  ///
-  /// Increases \c this to have an exponent matching \c X.  May decrease the
-  /// exponent of \c X in the process, and \c this may possibly become \a
-  /// isZero().
-  void increaseExponentToMatch(UnsignedFloat &X, int32_t ExponentDiff);
-
-public:
-  /// \brief Scale a large number accurately.
-  ///
-  /// Scale N (multiply it by this).  Uses full precision multiplication, even
-  /// if Width is smaller than 64, so information is not lost.
-  uint64_t scale(uint64_t N) const;
-  uint64_t scaleByInverse(uint64_t N) const {
-    // TODO: implement directly, rather than relying on inverse.  Inverse is
-    // expensive.
-    return inverse().scale(N);
-  }
-  int64_t scale(int64_t N) const {
-    std::pair<uint64_t, bool> Unsigned = splitSigned(N);
-    return joinSigned(scale(Unsigned.first), Unsigned.second);
-  }
-  int64_t scaleByInverse(int64_t N) const {
-    std::pair<uint64_t, bool> Unsigned = splitSigned(N);
-    return joinSigned(scaleByInverse(Unsigned.first), Unsigned.second);
-  }
-
-  int compare(const UnsignedFloat &X) const;
-  int compareTo(uint64_t N) const {
-    UnsignedFloat Float = getFloat(N);
-    int Compare = compare(Float);
-    if (Width == 64 || Compare != 0)
-      return Compare;
-
-    // Check for precision loss.  We know *this == RoundTrip.
-    uint64_t RoundTrip = Float.template toInt<uint64_t>();
-    return N == RoundTrip ? 0 : RoundTrip < N ? -1 : 1;
-  }
-  int compareTo(int64_t N) const { return N < 0 ? 1 : compareTo(uint64_t(N)); }
-
-  UnsignedFloat &invert() { return *this = UnsignedFloat::getFloat(1) / *this; }
-  UnsignedFloat inverse() const { return UnsignedFloat(*this).invert(); }
-
-private:
-  static UnsignedFloat getProduct(DigitsType L, DigitsType R);
-  static UnsignedFloat getQuotient(DigitsType Dividend, DigitsType Divisor);
-
-  std::pair<int32_t, int> lgImpl() const;
-  static int countLeadingZerosWidth(DigitsType Digits) {
-    if (Width == 64)
-      return countLeadingZeros64(Digits);
-    if (Width == 32)
-      return countLeadingZeros32(Digits);
-    return countLeadingZeros32(Digits) + Width - 32;
-  }
-
-  static UnsignedFloat adjustToWidth(uint64_t N, int32_t S) {
-    assert(S >= MinExponent);
-    assert(S <= MaxExponent);
-    if (Width == 64 || N <= DigitsLimits::max())
-      return UnsignedFloat(N, S);
-
-    // Shift right.
-    int Shift = 64 - Width - countLeadingZeros64(N);
-    DigitsType Shifted = N >> Shift;
-
-    // Round.
-    assert(S + Shift <= MaxExponent);
-    return getRounded(UnsignedFloat(Shifted, S + Shift),
-                      N & UINT64_C(1) << (Shift - 1));
-  }
-
-  static UnsignedFloat getRounded(UnsignedFloat P, bool Round) {
-    if (!Round)
-      return P;
-    if (P.Digits == DigitsLimits::max())
-      // Careful of overflow in the exponent.
-      return UnsignedFloat(1, P.Exponent) <<= Width;
-    return UnsignedFloat(P.Digits + 1, P.Exponent);
-  }
-};
-
-#define UNSIGNED_FLOAT_BOP(op, base)                                           \
-  template <class DigitsT>                                                     \
-  UnsignedFloat<DigitsT> operator op(const UnsignedFloat<DigitsT> &L,          \
-                                     const UnsignedFloat<DigitsT> &R) {        \
-    return UnsignedFloat<DigitsT>(L) base R;                                   \
-  }
-UNSIGNED_FLOAT_BOP(+, += )
-UNSIGNED_FLOAT_BOP(-, -= )
-UNSIGNED_FLOAT_BOP(*, *= )
-UNSIGNED_FLOAT_BOP(/, /= )
-UNSIGNED_FLOAT_BOP(<<, <<= )
-UNSIGNED_FLOAT_BOP(>>, >>= )
-#undef UNSIGNED_FLOAT_BOP
-
-template <class DigitsT>
-raw_ostream &operator<<(raw_ostream &OS, const UnsignedFloat<DigitsT> &X) {
-  return X.print(OS, 10);
-}
-
-#define UNSIGNED_FLOAT_COMPARE_TO_TYPE(op, T1, T2)                             \
-  template <class DigitsT>                                                     \
-  bool operator op(const UnsignedFloat<DigitsT> &L, T1 R) {                    \
-    return L.compareTo(T2(R)) op 0;                                            \
-  }                                                                            \
-  template <class DigitsT>                                                     \
-  bool operator op(T1 L, const UnsignedFloat<DigitsT> &R) {                    \
-    return 0 op R.compareTo(T2(L));                                            \
-  }
-#define UNSIGNED_FLOAT_COMPARE_TO(op)                                          \
-  UNSIGNED_FLOAT_COMPARE_TO_TYPE(op, uint64_t, uint64_t)                       \
-  UNSIGNED_FLOAT_COMPARE_TO_TYPE(op, uint32_t, uint64_t)                       \
-  UNSIGNED_FLOAT_COMPARE_TO_TYPE(op, int64_t, int64_t)                         \
-  UNSIGNED_FLOAT_COMPARE_TO_TYPE(op, int32_t, int64_t)
-UNSIGNED_FLOAT_COMPARE_TO(< )
-UNSIGNED_FLOAT_COMPARE_TO(> )
-UNSIGNED_FLOAT_COMPARE_TO(== )
-UNSIGNED_FLOAT_COMPARE_TO(!= )
-UNSIGNED_FLOAT_COMPARE_TO(<= )
-UNSIGNED_FLOAT_COMPARE_TO(>= )
-#undef UNSIGNED_FLOAT_COMPARE_TO
-#undef UNSIGNED_FLOAT_COMPARE_TO_TYPE
-
-template <class DigitsT>
-uint64_t UnsignedFloat<DigitsT>::scale(uint64_t N) const {
-  if (Width == 64 || N <= DigitsLimits::max())
-    return (getFloat(N) * *this).template toInt<uint64_t>();
-
-  // Defer to the 64-bit version.
-  return UnsignedFloat<uint64_t>(Digits, Exponent).scale(N);
-}
-
-template <class DigitsT>
-UnsignedFloat<DigitsT> UnsignedFloat<DigitsT>::getProduct(DigitsType L,
-                                                          DigitsType R) {
-  // Check for zero.
-  if (!L || !R)
-    return getZero();
-
-  // Check for numbers that we can compute with 64-bit math.
-  if (Width <= 32 || (L <= UINT32_MAX && R <= UINT32_MAX))
-    return adjustToWidth(uint64_t(L) * uint64_t(R), 0);
-
-  // Do the full thing.
-  return UnsignedFloat(multiply64(L, R));
-}
-template <class DigitsT>
-UnsignedFloat<DigitsT> UnsignedFloat<DigitsT>::getQuotient(DigitsType Dividend,
-                                                           DigitsType Divisor) {
-  // Check for zero.
-  if (!Dividend)
-    return getZero();
-  if (!Divisor)
-    return getLargest();
-
-  if (Width == 64)
-    return UnsignedFloat(divide64(Dividend, Divisor));
-
-  // We can compute this with 64-bit math.
-  int Shift = countLeadingZeros64(Dividend);
-  uint64_t Shifted = uint64_t(Dividend) << Shift;
-  uint64_t Quotient = Shifted / Divisor;
-
-  // If Quotient needs to be shifted, then adjustToWidth will round.
-  if (Quotient > DigitsLimits::max())
-    return adjustToWidth(Quotient, -Shift);
-
-  // Round based on the value of the next bit.
-  return getRounded(UnsignedFloat(Quotient, -Shift),
-                    Shifted % Divisor >= getHalf(Divisor));
-}
-
-template <class DigitsT>
-template <class IntT>
-IntT UnsignedFloat<DigitsT>::toInt() const {
-  typedef std::numeric_limits<IntT> Limits;
-  if (*this < 1)
-    return 0;
-  if (*this >= Limits::max())
-    return Limits::max();
-
-  IntT N = Digits;
-  if (Exponent > 0) {
-    assert(size_t(Exponent) < sizeof(IntT) * 8);
-    return N << Exponent;
-  }
-  if (Exponent < 0) {
-    assert(size_t(-Exponent) < sizeof(IntT) * 8);
-    return N >> -Exponent;
-  }
-  return N;
-}
-
-template <class DigitsT>
-std::pair<int32_t, int> UnsignedFloat<DigitsT>::lgImpl() const {
-  if (isZero())
-    return std::make_pair(INT32_MIN, 0);
-
-  // Get the floor of the lg of Digits.
-  int32_t LocalFloor = Width - countLeadingZerosWidth(Digits) - 1;
-
-  // Get the floor of the lg of this.
-  int32_t Floor = Exponent + LocalFloor;
-  if (Digits == UINT64_C(1) << LocalFloor)
-    return std::make_pair(Floor, 0);
-
-  // Round based on the next digit.
-  assert(LocalFloor >= 1);
-  bool Round = Digits & UINT64_C(1) << (LocalFloor - 1);
-  return std::make_pair(Floor + Round, Round ? 1 : -1);
-}
-
-template <class DigitsT>
-UnsignedFloat<DigitsT> UnsignedFloat<DigitsT>::matchExponents(UnsignedFloat X) {
-  if (isZero() || X.isZero() || Exponent == X.Exponent)
-    return X;
-
-  int32_t Diff = int32_t(X.Exponent) - int32_t(Exponent);
-  if (Diff > 0)
-    increaseExponentToMatch(X, Diff);
-  else
-    X.increaseExponentToMatch(*this, -Diff);
-  return X;
-}
-template <class DigitsT>
-void UnsignedFloat<DigitsT>::increaseExponentToMatch(UnsignedFloat &X,
-                                                     int32_t ExponentDiff) {
-  assert(ExponentDiff > 0);
-  if (ExponentDiff >= 2 * Width) {
-    *this = getZero();
-    return;
-  }
-
-  // Use up any leading zeros on X, and then shift this.
-  int32_t ShiftX = std::min(countLeadingZerosWidth(X.Digits), ExponentDiff);
-  assert(ShiftX < Width);
-
-  int32_t ShiftThis = ExponentDiff - ShiftX;
-  if (ShiftThis >= Width) {
-    *this = getZero();
-    return;
-  }
-
-  X.Digits <<= ShiftX;
-  X.Exponent -= ShiftX;
-  Digits >>= ShiftThis;
-  Exponent += ShiftThis;
-  return;
-}
-
-template <class DigitsT>
-UnsignedFloat<DigitsT> &UnsignedFloat<DigitsT>::
-operator+=(const UnsignedFloat &X) {
-  if (isLargest() || X.isZero())
-    return *this;
-  if (isZero() || X.isLargest())
-    return *this = X;
-
-  // Normalize exponents.
-  UnsignedFloat Scaled = matchExponents(X);
-
-  // Check for zero again.
-  if (isZero())
-    return *this = Scaled;
-  if (Scaled.isZero())
-    return *this;
-
-  // Compute sum.
-  DigitsType Sum = Digits + Scaled.Digits;
-  bool DidOverflow = Sum < Digits;
-  Digits = Sum;
-  if (!DidOverflow)
-    return *this;
-
-  if (Exponent == MaxExponent)
-    return *this = getLargest();
-
-  ++Exponent;
-  Digits = UINT64_C(1) << (Width - 1) | Digits >> 1;
-
-  return *this;
-}
-template <class DigitsT>
-UnsignedFloat<DigitsT> &UnsignedFloat<DigitsT>::
-operator-=(const UnsignedFloat &X) {
-  if (X.isZero())
-    return *this;
-  if (*this <= X)
-    return *this = getZero();
-
-  // Normalize exponents.
-  UnsignedFloat Scaled = matchExponents(X);
-  assert(Digits >= Scaled.Digits);
-
-  // Compute difference.
-  if (!Scaled.isZero()) {
-    Digits -= Scaled.Digits;
-    return *this;
-  }
-
-  // Check if X just barely lost its last bit.  E.g., for 32-bit:
-  //
-  //   1*2^32 - 1*2^0 == 0xffffffff != 1*2^32
-  if (*this == UnsignedFloat(1, X.lgFloor() + Width)) {
-    Digits = DigitsType(0) - 1;
-    --Exponent;
-  }
-  return *this;
-}
-template <class DigitsT>
-UnsignedFloat<DigitsT> &UnsignedFloat<DigitsT>::
-operator*=(const UnsignedFloat &X) {
-  if (isZero())
-    return *this;
-  if (X.isZero())
-    return *this = X;
-
-  // Save the exponents.
-  int32_t Exponents = int32_t(Exponent) + int32_t(X.Exponent);
-
-  // Get the raw product.
-  *this = getProduct(Digits, X.Digits);
-
-  // Combine with exponents.
-  return *this <<= Exponents;
-}
-template <class DigitsT>
-UnsignedFloat<DigitsT> &UnsignedFloat<DigitsT>::
-operator/=(const UnsignedFloat &X) {
-  if (isZero())
-    return *this;
-  if (X.isZero())
-    return *this = getLargest();
-
-  // Save the exponents.
-  int32_t Exponents = int32_t(Exponent) - int32_t(X.Exponent);
-
-  // Get the raw quotient.
-  *this = getQuotient(Digits, X.Digits);
-
-  // Combine with exponents.
-  return *this <<= Exponents;
-}
-template <class DigitsT>
-void UnsignedFloat<DigitsT>::shiftLeft(int32_t Shift) {
-  if (!Shift || isZero())
-    return;
-  assert(Shift != INT32_MIN);
-  if (Shift < 0) {
-    shiftRight(-Shift);
-    return;
-  }
-
-  // Shift as much as we can in the exponent.
-  int32_t ExponentShift = std::min(Shift, MaxExponent - Exponent);
-  Exponent += ExponentShift;
-  if (ExponentShift == Shift)
-    return;
-
-  // Check this late, since it's rare.
-  if (isLargest())
-    return;
-
-  // Shift the digits themselves.
-  Shift -= ExponentShift;
-  if (Shift > countLeadingZerosWidth(Digits)) {
-    // Saturate.
-    *this = getLargest();
-    return;
-  }
-
-  Digits <<= Shift;
-  return;
-}
-
-template <class DigitsT>
-void UnsignedFloat<DigitsT>::shiftRight(int32_t Shift) {
-  if (!Shift || isZero())
-    return;
-  assert(Shift != INT32_MIN);
-  if (Shift < 0) {
-    shiftLeft(-Shift);
-    return;
-  }
-
-  // Shift as much as we can in the exponent.
-  int32_t ExponentShift = std::min(Shift, Exponent - MinExponent);
-  Exponent -= ExponentShift;
-  if (ExponentShift == Shift)
-    return;
-
-  // Shift the digits themselves.
-  Shift -= ExponentShift;
-  if (Shift >= Width) {
-    // Saturate.
-    *this = getZero();
-    return;
-  }
-
-  Digits >>= Shift;
-  return;
-}
-
-template <class DigitsT>
-int UnsignedFloat<DigitsT>::compare(const UnsignedFloat &X) const {
-  // Check for zero.
-  if (isZero())
-    return X.isZero() ? 0 : -1;
-  if (X.isZero())
-    return 1;
-
-  // Check for the scale.  Use lgFloor to be sure that the exponent difference
-  // is always lower than 64.
-  int32_t lgL = lgFloor(), lgR = X.lgFloor();
-  if (lgL != lgR)
-    return lgL < lgR ? -1 : 1;
-
-  // Compare digits.
-  if (Exponent < X.Exponent)
-    return UnsignedFloatBase::compare(Digits, X.Digits, X.Exponent - Exponent);
-
-  return -UnsignedFloatBase::compare(X.Digits, Digits, Exponent - X.Exponent);
-}
-
-template <class T> struct isPodLike<UnsignedFloat<T>> {
-  static const bool value = true;
-};
-}
-
-//===----------------------------------------------------------------------===//
-//
-// BlockMass definition.
-//
-// TODO: Make this private to BlockFrequencyInfoImpl or delete.
-//
-//===----------------------------------------------------------------------===//
-namespace llvm {
+class BasicBlock;
+class BranchProbabilityInfo;
+class Function;
+class Loop;
+class LoopInfo;
+class MachineBasicBlock;
+class MachineBranchProbabilityInfo;
+class MachineFunction;
+class MachineLoop;
+class MachineLoopInfo;
+
+namespace bfi_detail {
+
+struct IrreducibleGraph;
+
+// This is part of a workaround for a GCC 4.7 crash on lambdas.
+template <class BT> struct BlockEdgesAdder;
 
 /// \brief Mass of a block.
 ///
@@ -756,85 +100,10 @@ public:
     return *this;
   }
 
-  /// \brief Scale by another mass.
-  ///
-  /// The current implementation is a little imprecise, but it's relatively
-  /// fast, never overflows, and maintains the property that 1.0*1.0==1.0
-  /// (where isFull represents the number 1.0).  It's an approximation of
-  /// 128-bit multiply that gets right-shifted by 64-bits.
-  ///
-  /// For a given digit size, multiplying two-digit numbers looks like:
-  ///
-  ///                  U1 .    L1
-  ///                * U2 .    L2
-  ///                ============
-  ///           0 .       . L1*L2
-  ///     +     0 . U1*L2 .     0 // (shift left once by a digit-size)
-  ///     +     0 . U2*L1 .     0 // (shift left once by a digit-size)
-  ///     + U1*L2 .     0 .     0 // (shift left twice by a digit-size)
-  ///
-  /// BlockMass has 64-bit numbers.  Split each into two 32-bit digits, stored
-  /// 64-bit.  Add 1 to the lower digits, to model isFull as 1.0; this won't
-  /// overflow, since we have 64-bit storage for each digit.
-  ///
-  /// To do this accurately, (a) multiply into two 64-bit digits, incrementing
-  /// the upper digit on overflows of the lower digit (carry), (b) subtract 1
-  /// from the lower digit, decrementing the upper digit on underflow (carry),
-  /// and (c) truncate the lower digit.  For the 1.0*1.0 case, the upper digit
-  /// will be 0 at the end of step (a), and then will underflow back to isFull
-  /// (1.0) in step (b).
-  ///
-  /// Instead, the implementation does something a little faster with a small
-  /// loss of accuracy: ignore the lower 64-bit digit entirely.  The loss of
-  /// accuracy is small, since the sum of the unmodelled carries is 0 or 1
-  /// (i.e., step (a) will overflow at most once, and step (b) will underflow
-  /// only if step (a) overflows).
-  ///
-  /// This is the formula we're calculating:
-  ///
-  ///     U1.L1 * U2.L2 == U1 * U2 + (U1 * (L2+1))>>32 + (U2 * (L1+1))>>32
-  ///
-  /// As a demonstration of 1.0*1.0, consider two 4-bit numbers that are both
-  /// full (1111).
-  ///
-  ///     U1.L1 * U2.L2 == U1 * U2 + (U1 * (L2+1))>>2 + (U2 * (L1+1))>>2
-  ///     11.11 * 11.11 == 11 * 11 + (11 * (11+1))/4 + (11 * (11+1))/4
-  ///                   == 1001 + (11 * 100)/4 + (11 * 100)/4
-  ///                   == 1001 + 1100/4 + 1100/4
-  ///                   == 1001 + 0011 + 0011
-  ///                   == 1111
-  BlockMass &operator*=(const BlockMass &X) {
-    uint64_t U1 = Mass >> 32, L1 = Mass & UINT32_MAX, U2 = X.Mass >> 32,
-             L2 = X.Mass & UINT32_MAX;
-    Mass = U1 * U2 + (U1 * (L2 + 1) >> 32) + ((L1 + 1) * U2 >> 32);
+  BlockMass &operator*=(const BranchProbability &P) {
+    Mass = P.scale(Mass);
     return *this;
   }
-
-  /// \brief Multiply by a branch probability.
-  ///
-  /// Multiply by P.  Guarantees full precision.
-  ///
-  /// This could be naively implemented by multiplying by the numerator and
-  /// dividing by the denominator, but in what order?  Multiplying first can
-  /// overflow, while dividing first will lose precision (potentially, changing
-  /// a non-zero mass to zero).
-  ///
-  /// The implementation mixes the two methods.  Since \a BranchProbability
-  /// uses 32-bits and \a BlockMass 64-bits, shift the mass as far to the left
-  /// as there is room, then divide by the denominator to get a quotient.
-  /// Multiplying by the numerator and right shifting gives a first
-  /// approximation.
-  ///
-  /// Calculate the error in this first approximation by calculating the
-  /// opposite mass (multiply by the opposite numerator and shift) and
-  /// subtracting both from teh original mass.
-  ///
-  /// Add to the first approximation the correct fraction of this error value.
-  /// This time, multiply first and then divide, since there is no danger of
-  /// overflow.
-  ///
-  /// \pre P represents a fraction between 0.0 and 1.0.
-  BlockMass &operator*=(const BranchProbability &P);
 
   bool operator==(const BlockMass &X) const { return Mass == X.Mass; }
   bool operator!=(const BlockMass &X) const { return Mass != X.Mass; }
@@ -843,11 +112,11 @@ public:
   bool operator<(const BlockMass &X) const { return Mass < X.Mass; }
   bool operator>(const BlockMass &X) const { return Mass > X.Mass; }
 
-  /// \brief Convert to floating point.
+  /// \brief Convert to scaled number.
   ///
-  /// Convert to a float.  \a isFull() gives 1.0, while \a isEmpty() gives
-  /// slightly above 0.0.
-  UnsignedFloat<uint64_t> toFloat() const;
+  /// Convert to \a ScaledNumber.  \a isFull() gives 1.0, while \a isEmpty()
+  /// gives slightly above 0.0.
+  ScaledNumber<uint64_t> toScaled() const;
 
   void dump() const;
   raw_ostream &print(raw_ostream &OS) const;
@@ -858,9 +127,6 @@ inline BlockMass operator+(const BlockMass &L, const BlockMass &R) {
 }
 inline BlockMass operator-(const BlockMass &L, const BlockMass &R) {
   return BlockMass(L) -= R;
-}
-inline BlockMass operator*(const BlockMass &L, const BlockMass &R) {
-  return BlockMass(L) *= R;
 }
 inline BlockMass operator*(const BlockMass &L, const BranchProbability &R) {
   return BlockMass(L) *= R;
@@ -873,28 +139,11 @@ inline raw_ostream &operator<<(raw_ostream &OS, const BlockMass &X) {
   return X.print(OS);
 }
 
-template <> struct isPodLike<BlockMass> {
+} // end namespace bfi_detail
+
+template <> struct isPodLike<bfi_detail::BlockMass> {
   static const bool value = true;
 };
-}
-
-//===----------------------------------------------------------------------===//
-//
-// BlockFrequencyInfoImpl definition.
-//
-//===----------------------------------------------------------------------===//
-namespace llvm {
-
-class BasicBlock;
-class BranchProbabilityInfo;
-class Function;
-class Loop;
-class LoopInfo;
-class MachineBasicBlock;
-class MachineBranchProbabilityInfo;
-class MachineFunction;
-class MachineLoop;
-class MachineLoopInfo;
 
 /// \brief Base class for BlockFrequencyInfoImpl
 ///
@@ -906,7 +155,8 @@ class MachineLoopInfo;
 /// BlockFrequencyInfoImpl.  See there for details.
 class BlockFrequencyInfoImplBase {
 public:
-  typedef UnsignedFloat<uint64_t> Float;
+  typedef ScaledNumber<uint64_t> Scaled64;
+  typedef bfi_detail::BlockMass BlockMass;
 
   /// \brief Representative of a block.
   ///
@@ -935,7 +185,7 @@ public:
 
   /// \brief Stats about a block itself.
   struct FrequencyData {
-    Float Floating;
+    Scaled64 Scaled;
     uint64_t Integer;
   };
 
@@ -948,18 +198,34 @@ public:
     typedef SmallVector<BlockNode, 4> NodeList;
     LoopData *Parent;       ///< The parent loop.
     bool IsPackaged;        ///< Whether this has been packaged.
+    uint32_t NumHeaders;    ///< Number of headers.
     ExitMap Exits;          ///< Successor edges (and weights).
     NodeList Nodes;         ///< Header and the members of the loop.
     BlockMass BackedgeMass; ///< Mass returned to loop header.
     BlockMass Mass;
-    Float Scale;
+    Scaled64 Scale;
 
     LoopData(LoopData *Parent, const BlockNode &Header)
-        : Parent(Parent), IsPackaged(false), Nodes(1, Header) {}
-    bool isHeader(const BlockNode &Node) const { return Node == Nodes[0]; }
+        : Parent(Parent), IsPackaged(false), NumHeaders(1), Nodes(1, Header) {}
+    template <class It1, class It2>
+    LoopData(LoopData *Parent, It1 FirstHeader, It1 LastHeader, It2 FirstOther,
+             It2 LastOther)
+        : Parent(Parent), IsPackaged(false), Nodes(FirstHeader, LastHeader) {
+      NumHeaders = Nodes.size();
+      Nodes.insert(Nodes.end(), FirstOther, LastOther);
+    }
+    bool isHeader(const BlockNode &Node) const {
+      if (isIrreducible())
+        return std::binary_search(Nodes.begin(), Nodes.begin() + NumHeaders,
+                                  Node);
+      return Node == Nodes[0];
+    }
     BlockNode getHeader() const { return Nodes[0]; }
+    bool isIrreducible() const { return NumHeaders > 1; }
 
-    NodeList::const_iterator members_begin() const { return Nodes.begin() + 1; }
+    NodeList::const_iterator members_begin() const {
+      return Nodes.begin() + NumHeaders;
+    }
     NodeList::const_iterator members_end() const { return Nodes.end(); }
     iterator_range<NodeList::const_iterator> members() const {
       return make_range(members_begin(), members_end());
@@ -975,9 +241,17 @@ public:
     WorkingData(const BlockNode &Node) : Node(Node), Loop(nullptr) {}
 
     bool isLoopHeader() const { return Loop && Loop->isHeader(Node); }
+    bool isDoubleLoopHeader() const {
+      return isLoopHeader() && Loop->Parent && Loop->Parent->isIrreducible() &&
+             Loop->Parent->isHeader(Node);
+    }
 
     LoopData *getContainingLoop() const {
-      return isLoopHeader() ? Loop->Parent : Loop;
+      if (!isLoopHeader())
+        return Loop;
+      if (!isDoubleLoopHeader())
+        return Loop->Parent;
+      return Loop->Parent->Parent;
     }
 
     /// \brief Resolve a node to its representative.
@@ -986,7 +260,7 @@ public:
     /// loop.
     ///
     /// This function should only be called when distributing mass.  As long as
-    /// there are no irreducilbe edges to Node, then it will have complexity
+    /// there are no irreducible edges to Node, then it will have complexity
     /// O(1) in this context.
     ///
     /// In general, the complexity is O(L), where L is the number of loop
@@ -1011,12 +285,22 @@ public:
     /// Get appropriate mass for Node.  If Node is a loop-header (whose loop
     /// has been packaged), returns the mass of its pseudo-node.  If it's a
     /// node inside a packaged loop, it returns the loop's mass.
-    BlockMass &getMass() { return isAPackage() ? Loop->Mass : Mass; }
+    BlockMass &getMass() {
+      if (!isAPackage())
+        return Mass;
+      if (!isADoublePackage())
+        return Loop->Mass;
+      return Loop->Parent->Mass;
+    }
 
     /// \brief Has ContainingLoop been packaged up?
     bool isPackaged() const { return getResolvedNode() != Node; }
     /// \brief Has Loop been packaged up?
     bool isAPackage() const { return isLoopHeader() && Loop->IsPackaged; }
+    /// \brief Has Loop been packaged up twice?
+    bool isADoublePackage() const {
+      return isDoubleLoopHeader() && Loop->Parent->IsPackaged;
+    }
   };
 
   /// \brief Unscaled probability weight.
@@ -1038,6 +322,8 @@ public:
     BlockNode TargetNode;
     uint64_t Amount;
     Weight() : Type(Local), Amount(0) {}
+    Weight(DistType Type, BlockNode TargetNode, uint64_t Amount)
+        : Type(Type), TargetNode(TargetNode), Amount(Amount) {}
   };
 
   /// \brief Distribution of unscaled probability weight.
@@ -1093,7 +379,9 @@ public:
   ///
   /// Adds all edges from LocalLoopHead to Dist.  Calls addToDist() to add each
   /// successor edge.
-  void addLoopSuccessorsToDist(const LoopData *OuterLoop, LoopData &Loop,
+  ///
+  /// \return \c true unless there's an irreducible backedge.
+  bool addLoopSuccessorsToDist(const LoopData *OuterLoop, LoopData &Loop,
                                Distribution &Dist);
 
   /// \brief Add an edge to the distribution.
@@ -1101,7 +389,9 @@ public:
   /// Adds an edge to Succ to Dist.  If \c LoopHead.isValid(), then whether the
   /// edge is local/exit/backedge is in the context of LoopHead.  Otherwise,
   /// every edge should be a local edge (since all the loops are packaged up).
-  void addToDist(Distribution &Dist, const LoopData *OuterLoop,
+  ///
+  /// \return \c true unless aborted due to an irreducible backedge.
+  bool addToDist(Distribution &Dist, const LoopData *OuterLoop,
                  const BlockNode &Pred, const BlockNode &Succ, uint64_t Weight);
 
   LoopData &getLoopPackage(const BlockNode &Head) {
@@ -1109,6 +399,25 @@ public:
     assert(Working[Head.Index].isLoopHeader());
     return *Working[Head.Index].Loop;
   }
+
+  /// \brief Analyze irreducible SCCs.
+  ///
+  /// Separate irreducible SCCs from \c G, which is an explict graph of \c
+  /// OuterLoop (or the top-level function, if \c OuterLoop is \c nullptr).
+  /// Insert them into \a Loops before \c Insert.
+  ///
+  /// \return the \c LoopData nodes representing the irreducible SCCs.
+  iterator_range<std::list<LoopData>::iterator>
+  analyzeIrreducible(const bfi_detail::IrreducibleGraph &G, LoopData *OuterLoop,
+                     std::list<LoopData>::iterator Insert);
+
+  /// \brief Update a loop after packaging irreducible SCCs inside of it.
+  ///
+  /// Update \c OuterLoop.  Before finding irreducible control flow, it was
+  /// partway through \a computeMassInLoop(), so \a LoopData::Exits and \a
+  /// LoopData::BackedgeMass need to be reset.  Also, nodes that were packaged
+  /// up need to be removed from \a OuterLoop::Nodes.
+  void updateLoopWithIrreducible(LoopData &OuterLoop);
 
   /// \brief Distribute mass according to a distribution.
   ///
@@ -1138,11 +447,12 @@ public:
   void clear();
 
   virtual std::string getBlockName(const BlockNode &Node) const;
+  std::string getLoopName(const LoopData &Loop) const;
 
   virtual raw_ostream &print(raw_ostream &OS) const { return OS; }
   void dump() const { print(dbgs()); }
 
-  Float getFloatingBlockFreq(const BlockNode &Node) const;
+  Scaled64 getFloatingBlockFreq(const BlockNode &Node) const;
 
   BlockFrequency getBlockFreq(const BlockNode &Node) const;
 
@@ -1197,6 +507,106 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
   assert(BB && "Unexpected nullptr");
   return BB->getName().str();
 }
+
+/// \brief Graph of irreducible control flow.
+///
+/// This graph is used for determining the SCCs in a loop (or top-level
+/// function) that has irreducible control flow.
+///
+/// During the block frequency algorithm, the local graphs are defined in a
+/// light-weight way, deferring to the \a BasicBlock or \a MachineBasicBlock
+/// graphs for most edges, but getting others from \a LoopData::ExitMap.  The
+/// latter only has successor information.
+///
+/// \a IrreducibleGraph makes this graph explicit.  It's in a form that can use
+/// \a GraphTraits (so that \a analyzeIrreducible() can use \a scc_iterator),
+/// and it explicitly lists predecessors and successors.  The initialization
+/// that relies on \c MachineBasicBlock is defined in the header.
+struct IrreducibleGraph {
+  typedef BlockFrequencyInfoImplBase BFIBase;
+
+  BFIBase &BFI;
+
+  typedef BFIBase::BlockNode BlockNode;
+  struct IrrNode {
+    BlockNode Node;
+    unsigned NumIn;
+    std::deque<const IrrNode *> Edges;
+    IrrNode(const BlockNode &Node) : Node(Node), NumIn(0) {}
+
+    typedef std::deque<const IrrNode *>::const_iterator iterator;
+    iterator pred_begin() const { return Edges.begin(); }
+    iterator succ_begin() const { return Edges.begin() + NumIn; }
+    iterator pred_end() const { return succ_begin(); }
+    iterator succ_end() const { return Edges.end(); }
+  };
+  BlockNode Start;
+  const IrrNode *StartIrr;
+  std::vector<IrrNode> Nodes;
+  SmallDenseMap<uint32_t, IrrNode *, 4> Lookup;
+
+  /// \brief Construct an explicit graph containing irreducible control flow.
+  ///
+  /// Construct an explicit graph of the control flow in \c OuterLoop (or the
+  /// top-level function, if \c OuterLoop is \c nullptr).  Uses \c
+  /// addBlockEdges to add block successors that have not been packaged into
+  /// loops.
+  ///
+  /// \a BlockFrequencyInfoImpl::computeIrreducibleMass() is the only expected
+  /// user of this.
+  template <class BlockEdgesAdder>
+  IrreducibleGraph(BFIBase &BFI, const BFIBase::LoopData *OuterLoop,
+                   BlockEdgesAdder addBlockEdges)
+      : BFI(BFI), StartIrr(nullptr) {
+    initialize(OuterLoop, addBlockEdges);
+  }
+
+  template <class BlockEdgesAdder>
+  void initialize(const BFIBase::LoopData *OuterLoop,
+                  BlockEdgesAdder addBlockEdges);
+  void addNodesInLoop(const BFIBase::LoopData &OuterLoop);
+  void addNodesInFunction();
+  void addNode(const BlockNode &Node) {
+    Nodes.emplace_back(Node);
+    BFI.Working[Node.Index].getMass() = BlockMass::getEmpty();
+  }
+  void indexNodes();
+  template <class BlockEdgesAdder>
+  void addEdges(const BlockNode &Node, const BFIBase::LoopData *OuterLoop,
+                BlockEdgesAdder addBlockEdges);
+  void addEdge(IrrNode &Irr, const BlockNode &Succ,
+               const BFIBase::LoopData *OuterLoop);
+};
+template <class BlockEdgesAdder>
+void IrreducibleGraph::initialize(const BFIBase::LoopData *OuterLoop,
+                                  BlockEdgesAdder addBlockEdges) {
+  if (OuterLoop) {
+    addNodesInLoop(*OuterLoop);
+    for (auto N : OuterLoop->Nodes)
+      addEdges(N, OuterLoop, addBlockEdges);
+  } else {
+    addNodesInFunction();
+    for (uint32_t Index = 0; Index < BFI.Working.size(); ++Index)
+      addEdges(Index, OuterLoop, addBlockEdges);
+  }
+  StartIrr = Lookup[Start.Index];
+}
+template <class BlockEdgesAdder>
+void IrreducibleGraph::addEdges(const BlockNode &Node,
+                                const BFIBase::LoopData *OuterLoop,
+                                BlockEdgesAdder addBlockEdges) {
+  auto L = Lookup.find(Node.Index);
+  if (L == Lookup.end())
+    return;
+  IrrNode &Irr = *L->second;
+  const auto &Working = BFI.Working[Node.Index];
+
+  if (Working.isAPackage())
+    for (const auto &I : Working.Loop->Exits)
+      addEdge(Irr, I.first, OuterLoop);
+  else
+    addBlockEdges(*this, Irr, OuterLoop);
+}
 }
 
 /// \brief Shared implementation for block frequency analysis.
@@ -1205,7 +615,23 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
 /// MachineBlockFrequencyInfo, and calculates the relative frequencies of
 /// blocks.
 ///
-/// This algorithm leverages BlockMass and UnsignedFloat to maintain precision,
+/// LoopInfo defines a loop as a "non-trivial" SCC dominated by a single block,
+/// which is called the header.  A given loop, L, can have sub-loops, which are
+/// loops within the subgraph of L that exclude its header.  (A "trivial" SCC
+/// consists of a single block that does not have a self-edge.)
+///
+/// In addition to loops, this algorithm has limited support for irreducible
+/// SCCs, which are SCCs with multiple entry blocks.  Irreducible SCCs are
+/// discovered on they fly, and modelled as loops with multiple headers.
+///
+/// The headers of irreducible sub-SCCs consist of its entry blocks and all
+/// nodes that are targets of a backedge within it (excluding backedges within
+/// true sub-loops).  Block frequency calculations act as if a block is
+/// inserted that intercepts all the edges to the headers.  All backedges and
+/// entries point to this block.  Its successors are the headers, which split
+/// the frequency evenly.
+///
+/// This algorithm leverages BlockMass and ScaledNumber to maintain precision,
 /// separates mass distribution from loop scaling, and dithers to eliminate
 /// probability mass loss.
 ///
@@ -1228,7 +654,7 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
 ///     All other stages make use of this ordering.  Save a lookup from BlockT
 ///     to BlockNode (the index into RPOT) in Nodes.
 ///
-///  1. Loop indexing (\a initializeLoops()).
+///  1. Loop initialization (\a initializeLoops()).
 ///
 ///     Translate LoopInfo/MachineLoopInfo into a form suitable for the rest of
 ///     the algorithm.  In particular, store the immediate members of each loop
@@ -1239,11 +665,9 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
 ///     For each loop (bottom-up), distribute mass through the DAG resulting
 ///     from ignoring backedges and treating sub-loops as a single pseudo-node.
 ///     Track the backedge mass distributed to the loop header, and use it to
-///     calculate the loop scale (number of loop iterations).
-///
-///     Visiting loops bottom-up is a post-order traversal of loop headers.
-///     For each loop, immediate members that represent sub-loops will already
-///     have been visited and packaged into a pseudo-node.
+///     calculate the loop scale (number of loop iterations).  Immediate
+///     members that represent sub-loops will already have been visited and
+///     packaged into a pseudo-node.
 ///
 ///     Distributing mass in a loop is a reverse-post-order traversal through
 ///     the loop.  Start by assigning full mass to the Loop header.  For each
@@ -1260,6 +684,11 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
 ///           The weight, the successor, and its category are stored in \a
 ///           Distribution.  There can be multiple edges to each successor.
 ///
+///         - If there's a backedge to a non-header, there's an irreducible SCC.
+///           The usual flow is temporarily aborted.  \a
+///           computeIrreducibleMass() finds the irreducible SCCs within the
+///           loop, packages them up, and restarts the flow.
+///
 ///         - Normalize the distribution:  scale weights down so that their sum
 ///           is 32-bits, and coalesce multiple edges to the same node.
 ///
@@ -1274,39 +703,59 @@ template <> inline std::string getBlockName(const BasicBlock *BB) {
 ///     loops in the function.  This uses the same algorithm as distributing
 ///     mass in a loop, except that there are no exit or backedge edges.
 ///
-///  4. Loop unpackaging and cleanup (\a finalizeMetrics()).
+///  4. Unpackage loops (\a unwrapLoops()).
 ///
-///     Initialize the frequency to a floating point representation of its
-///     mass.
+///     Initialize each block's frequency to a floating point representation of
+///     its mass.
 ///
-///     Visit loops top-down (reverse post-order), scaling the loop header's
-///     frequency by its psuedo-node's mass and loop scale.  Keep track of the
-///     minimum and maximum final frequencies.
+///     Visit loops top-down, scaling the frequencies of its immediate members
+///     by the loop's pseudo-node's frequency.
+///
+///  5. Convert frequencies to a 64-bit range (\a finalizeMetrics()).
 ///
 ///     Using the min and max frequencies as a guide, translate floating point
 ///     frequencies to an appropriate range in uint64_t.
 ///
 /// It has some known flaws.
 ///
-///   - Irreducible control flow isn't modelled correctly.  In particular,
-///     LoopInfo and MachineLoopInfo ignore irreducible backedges.  The main
-///     result is that irreducible SCCs will under-scaled.  No mass is lost,
-///     but the computed branch weights for the loop pseudo-node will be
-///     incorrect.
+///   - The model of irreducible control flow is a rough approximation.
 ///
 ///     Modelling irreducible control flow exactly involves setting up and
 ///     solving a group of infinite geometric series.  Such precision is
 ///     unlikely to be worthwhile, since most of our algorithms give up on
 ///     irreducible control flow anyway.
 ///
-///     Nevertheless, we might find that we need to get closer.  If
-///     LoopInfo/MachineLoopInfo flags loops with irreducible control flow
-///     (and/or the function as a whole), we can find the SCCs, compute an
-///     approximate exit frequency for the SCC as a whole, and scale up
-///     accordingly.
+///     Nevertheless, we might find that we need to get closer.  Here's a sort
+///     of TODO list for the model with diminishing returns, to be completed as
+///     necessary.
 ///
-///   - Loop scale is limited to 4096 per loop (2^12) to avoid exhausting
-///     BlockFrequency's 64-bit integer precision.
+///       - The headers for the \a LoopData representing an irreducible SCC
+///         include non-entry blocks.  When these extra blocks exist, they
+///         indicate a self-contained irreducible sub-SCC.  We could treat them
+///         as sub-loops, rather than arbitrarily shoving the problematic
+///         blocks into the headers of the main irreducible SCC.
+///
+///       - Backedge frequencies are assumed to be evenly split between the
+///         headers of a given irreducible SCC.  Instead, we could track the
+///         backedge mass separately for each header, and adjust their relative
+///         frequencies.
+///
+///       - Entry frequencies are assumed to be evenly split between the
+///         headers of a given irreducible SCC, which is the only option if we
+///         need to compute mass in the SCC before its parent loop.  Instead,
+///         we could partially compute mass in the parent loop, and stop when
+///         we get to the SCC.  Here, we have the correct ratio of entry
+///         masses, which we can use to adjust their relative frequencies.
+///         Compute mass in the SCC, and then continue propagation in the
+///         parent.
+///
+///       - We can propagate mass iteratively through the SCC, for some fixed
+///         number of iterations.  Each iteration starts by assigning the entry
+///         blocks their backedge mass from the prior iteration.  The final
+///         mass for each block (and each exit, and the total backedge mass
+///         used for computing loop scale) is the sum of all iterations.
+///         (Running this until fixed point would "solve" the geometric
+///         series by simulation.)
 template <class BT> class BlockFrequencyInfoImpl : BlockFrequencyInfoImplBase {
   typedef typename bfi_detail::TypeMap<BT>::BlockT BlockT;
   typedef typename bfi_detail::TypeMap<BT>::FunctionT FunctionT;
@@ -1314,6 +763,9 @@ template <class BT> class BlockFrequencyInfoImpl : BlockFrequencyInfoImplBase {
   BranchProbabilityInfoT;
   typedef typename bfi_detail::TypeMap<BT>::LoopT LoopT;
   typedef typename bfi_detail::TypeMap<BT>::LoopInfoT LoopInfoT;
+
+  // This is part of a workaround for a GCC 4.7 crash on lambdas.
+  friend struct bfi_detail::BlockEdgesAdder<BT>;
 
   typedef GraphTraits<const BlockT *> Successor;
   typedef GraphTraits<Inverse<const BlockT *>> Predecessor;
@@ -1361,7 +813,9 @@ template <class BT> class BlockFrequencyInfoImpl : BlockFrequencyInfoImplBase {
   ///
   /// In the context of distributing mass through \c OuterLoop, divide the mass
   /// currently assigned to \c Node between its successors.
-  void propagateMassToSuccessors(LoopData *OuterLoop, const BlockNode &Node);
+  ///
+  /// \return \c true unless there's an irreducible backedge.
+  bool propagateMassToSuccessors(LoopData *OuterLoop, const BlockNode &Node);
 
   /// \brief Compute mass in a particular loop.
   ///
@@ -1370,20 +824,51 @@ template <class BT> class BlockFrequencyInfoImpl : BlockFrequencyInfoImplBase {
   /// that have not been packaged into sub-loops.
   ///
   /// \pre \a computeMassInLoop() has been called for each subloop of \c Loop.
-  void computeMassInLoop(LoopData &Loop);
+  /// \return \c true unless there's an irreducible backedge.
+  bool computeMassInLoop(LoopData &Loop);
 
-  /// \brief Compute mass in all loops.
-  ///
-  /// For each loop bottom-up, call \a computeMassInLoop().
-  void computeMassInLoops();
-
-  /// \brief Compute mass in the top-level function.
+  /// \brief Try to compute mass in the top-level function.
   ///
   /// Assign mass to the entry block, and then for each block in reverse
   /// post-order, distribute mass to its successors.  Skips nodes that have
   /// been packaged into loops.
   ///
   /// \pre \a computeMassInLoops() has been called.
+  /// \return \c true unless there's an irreducible backedge.
+  bool tryToComputeMassInFunction();
+
+  /// \brief Compute mass in (and package up) irreducible SCCs.
+  ///
+  /// Find the irreducible SCCs in \c OuterLoop, add them to \a Loops (in front
+  /// of \c Insert), and call \a computeMassInLoop() on each of them.
+  ///
+  /// If \c OuterLoop is \c nullptr, it refers to the top-level function.
+  ///
+  /// \pre \a computeMassInLoop() has been called for each subloop of \c
+  /// OuterLoop.
+  /// \pre \c Insert points at the the last loop successfully processed by \a
+  /// computeMassInLoop().
+  /// \pre \c OuterLoop has irreducible SCCs.
+  void computeIrreducibleMass(LoopData *OuterLoop,
+                              std::list<LoopData>::iterator Insert);
+
+  /// \brief Compute mass in all loops.
+  ///
+  /// For each loop bottom-up, call \a computeMassInLoop().
+  ///
+  /// \a computeMassInLoop() aborts (and returns \c false) on loops that
+  /// contain a irreducible sub-SCCs.  Use \a computeIrreducibleMass() and then
+  /// re-enter \a computeMassInLoop().
+  ///
+  /// \post \a computeMassInLoop() has returned \c true for every loop.
+  void computeMassInLoops();
+
+  /// \brief Compute mass in the top-level function.
+  ///
+  /// Uses \a tryToComputeMassInFunction() and \a computeIrreducibleMass() to
+  /// compute mass in the top-level function.
+  ///
+  /// \post \a tryToComputeMassInFunction() has returned \c true.
   void computeMassInFunction();
 
   std::string getBlockName(const BlockNode &Node) const override {
@@ -1395,13 +880,13 @@ public:
 
   void doFunction(const FunctionT *F, const BranchProbabilityInfoT *BPI,
                   const LoopInfoT *LI);
-  BlockFrequencyInfoImpl() : BPI(0), LI(0), F(0) {}
+  BlockFrequencyInfoImpl() : BPI(nullptr), LI(nullptr), F(nullptr) {}
 
   using BlockFrequencyInfoImplBase::getEntryFreq;
   BlockFrequency getBlockFreq(const BlockT *BB) const {
     return BlockFrequencyInfoImplBase::getBlockFreq(getNode(BB));
   }
-  Float getFloatingBlockFreq(const BlockT *BB) const {
+  Scaled64 getFloatingBlockFreq(const BlockT *BB) const {
     return BlockFrequencyInfoImplBase::getFloatingBlockFreq(getNode(BB));
   }
 
@@ -1530,27 +1015,50 @@ template <class BT> void BlockFrequencyInfoImpl<BT>::initializeLoops() {
 
 template <class BT> void BlockFrequencyInfoImpl<BT>::computeMassInLoops() {
   // Visit loops with the deepest first, and the top-level loops last.
-  for (auto L = Loops.rbegin(), E = Loops.rend(); L != E; ++L)
-    computeMassInLoop(*L);
+  for (auto L = Loops.rbegin(), E = Loops.rend(); L != E; ++L) {
+    if (computeMassInLoop(*L))
+      continue;
+    auto Next = std::next(L);
+    computeIrreducibleMass(&*L, L.base());
+    L = std::prev(Next);
+    if (computeMassInLoop(*L))
+      continue;
+    llvm_unreachable("unhandled irreducible control flow");
+  }
 }
 
 template <class BT>
-void BlockFrequencyInfoImpl<BT>::computeMassInLoop(LoopData &Loop) {
+bool BlockFrequencyInfoImpl<BT>::computeMassInLoop(LoopData &Loop) {
   // Compute mass in loop.
-  DEBUG(dbgs() << "compute-mass-in-loop: " << getBlockName(Loop.getHeader())
-               << "\n");
+  DEBUG(dbgs() << "compute-mass-in-loop: " << getLoopName(Loop) << "\n");
 
-  Working[Loop.getHeader().Index].getMass() = BlockMass::getFull();
-  propagateMassToSuccessors(&Loop, Loop.getHeader());
-
-  for (const BlockNode &M : Loop.members())
-    propagateMassToSuccessors(&Loop, M);
+  if (Loop.isIrreducible()) {
+    BlockMass Remaining = BlockMass::getFull();
+    for (uint32_t H = 0; H < Loop.NumHeaders; ++H) {
+      auto &Mass = Working[Loop.Nodes[H].Index].getMass();
+      Mass = Remaining * BranchProbability(1, Loop.NumHeaders - H);
+      Remaining -= Mass;
+    }
+    for (const BlockNode &M : Loop.Nodes)
+      if (!propagateMassToSuccessors(&Loop, M))
+        llvm_unreachable("unhandled irreducible control flow");
+  } else {
+    Working[Loop.getHeader().Index].getMass() = BlockMass::getFull();
+    if (!propagateMassToSuccessors(&Loop, Loop.getHeader()))
+      llvm_unreachable("irreducible control flow to loop header!?");
+    for (const BlockNode &M : Loop.members())
+      if (!propagateMassToSuccessors(&Loop, M))
+        // Irreducible backedge.
+        return false;
+  }
 
   computeLoopScale(Loop);
   packageLoop(Loop);
+  return true;
 }
 
-template <class BT> void BlockFrequencyInfoImpl<BT>::computeMassInFunction() {
+template <class BT>
+bool BlockFrequencyInfoImpl<BT>::tryToComputeMassInFunction() {
   // Compute mass in function.
   DEBUG(dbgs() << "compute-mass-in-function\n");
   assert(!Working.empty() && "no blocks in function");
@@ -1563,12 +1071,63 @@ template <class BT> void BlockFrequencyInfoImpl<BT>::computeMassInFunction() {
     if (Working[Node.Index].isPackaged())
       continue;
 
-    propagateMassToSuccessors(nullptr, Node);
+    if (!propagateMassToSuccessors(nullptr, Node))
+      return false;
   }
+  return true;
+}
+
+template <class BT> void BlockFrequencyInfoImpl<BT>::computeMassInFunction() {
+  if (tryToComputeMassInFunction())
+    return;
+  computeIrreducibleMass(nullptr, Loops.begin());
+  if (tryToComputeMassInFunction())
+    return;
+  llvm_unreachable("unhandled irreducible control flow");
+}
+
+/// \note This should be a lambda, but that crashes GCC 4.7.
+namespace bfi_detail {
+template <class BT> struct BlockEdgesAdder {
+  typedef BT BlockT;
+  typedef BlockFrequencyInfoImplBase::LoopData LoopData;
+  typedef GraphTraits<const BlockT *> Successor;
+
+  const BlockFrequencyInfoImpl<BT> &BFI;
+  explicit BlockEdgesAdder(const BlockFrequencyInfoImpl<BT> &BFI)
+      : BFI(BFI) {}
+  void operator()(IrreducibleGraph &G, IrreducibleGraph::IrrNode &Irr,
+                  const LoopData *OuterLoop) {
+    const BlockT *BB = BFI.RPOT[Irr.Node.Index];
+    for (auto I = Successor::child_begin(BB), E = Successor::child_end(BB);
+         I != E; ++I)
+      G.addEdge(Irr, BFI.getNode(*I), OuterLoop);
+  }
+};
+}
+template <class BT>
+void BlockFrequencyInfoImpl<BT>::computeIrreducibleMass(
+    LoopData *OuterLoop, std::list<LoopData>::iterator Insert) {
+  DEBUG(dbgs() << "analyze-irreducible-in-";
+        if (OuterLoop) dbgs() << "loop: " << getLoopName(*OuterLoop) << "\n";
+        else dbgs() << "function\n");
+
+  using namespace bfi_detail;
+  // Ideally, addBlockEdges() would be declared here as a lambda, but that
+  // crashes GCC 4.7.
+  BlockEdgesAdder<BT> addBlockEdges(*this);
+  IrreducibleGraph G(*this, OuterLoop, addBlockEdges);
+
+  for (auto &L : analyzeIrreducible(G, OuterLoop, Insert))
+    computeMassInLoop(L);
+
+  if (!OuterLoop)
+    return;
+  updateLoopWithIrreducible(*OuterLoop);
 }
 
 template <class BT>
-void
+bool
 BlockFrequencyInfoImpl<BT>::propagateMassToSuccessors(LoopData *OuterLoop,
                                                       const BlockNode &Node) {
   DEBUG(dbgs() << " - node: " << getBlockName(Node) << "\n");
@@ -1576,20 +1135,25 @@ BlockFrequencyInfoImpl<BT>::propagateMassToSuccessors(LoopData *OuterLoop,
   Distribution Dist;
   if (auto *Loop = Working[Node.Index].getPackagedLoop()) {
     assert(Loop != OuterLoop && "Cannot propagate mass in a packaged loop");
-    addLoopSuccessorsToDist(OuterLoop, *Loop, Dist);
+    if (!addLoopSuccessorsToDist(OuterLoop, *Loop, Dist))
+      // Irreducible backedge.
+      return false;
   } else {
     const BlockT *BB = getBlock(Node);
     for (auto SI = Successor::child_begin(BB), SE = Successor::child_end(BB);
          SI != SE; ++SI)
       // Do not dereference SI, or getEdgeWeight() is linear in the number of
       // successors.
-      addToDist(Dist, OuterLoop, Node, getNode(*SI),
-                BPI->getEdgeWeight(BB, SI));
+      if (!addToDist(Dist, OuterLoop, Node, getNode(*SI),
+                     BPI->getEdgeWeight(BB, SI)))
+        // Irreducible backedge.
+        return false;
   }
 
   // Distribute mass to successors, saving exit and backedge data in the
   // loop header.
   distributeMass(Node, OuterLoop, Dist);
+  return true;
 }
 
 template <class BT>
@@ -1606,7 +1170,8 @@ raw_ostream &BlockFrequencyInfoImpl<BT>::print(raw_ostream &OS) const {
   OS << "\n";
   return OS;
 }
-}
+
+} // end namespace llvm
 
 #undef DEBUG_TYPE
 

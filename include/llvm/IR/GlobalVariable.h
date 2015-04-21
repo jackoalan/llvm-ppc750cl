@@ -22,7 +22,7 @@
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/ilist_node.h"
-#include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/GlobalObject.h"
 #include "llvm/IR/OperandTraits.h"
 
 namespace llvm {
@@ -32,18 +32,15 @@ class Constant;
 template<typename ValueSubClass, typename ItemParentClass>
   class SymbolTableListTraits;
 
-class GlobalVariable : public GlobalValue, public ilist_node<GlobalVariable> {
+class GlobalVariable : public GlobalObject, public ilist_node<GlobalVariable> {
   friend class SymbolTableListTraits<GlobalVariable, Module>;
-  void *operator new(size_t, unsigned) LLVM_DELETED_FUNCTION;
-  void operator=(const GlobalVariable &) LLVM_DELETED_FUNCTION;
-  GlobalVariable(const GlobalVariable &) LLVM_DELETED_FUNCTION;
+  void *operator new(size_t, unsigned) = delete;
+  void operator=(const GlobalVariable &) = delete;
+  GlobalVariable(const GlobalVariable &) = delete;
 
   void setParent(Module *parent);
 
   bool isConstantGlobal : 1;                   // Is this a global constant?
-  unsigned threadLocalMode : 3;                // Is this symbol "Thread Local",
-                                               // if so, what is the desired
-                                               // model?
   bool isExternallyInitializedConstant : 1;    // Is this a global whose value
                                                // can change from its initial
                                                // value before global
@@ -54,14 +51,6 @@ public:
   void *operator new(size_t s) {
     return User::operator new(s, 1);
   }
-
-  enum ThreadLocalMode {
-    NotThreadLocal = 0,
-    GeneralDynamicTLSModel,
-    LocalDynamicTLSModel,
-    InitialExecTLSModel,
-    LocalExecTLSModel
-  };
 
   /// GlobalVariable ctor - If a parent module is specified, the global is
   /// automatically inserted into the end of the specified modules global list.
@@ -77,7 +66,7 @@ public:
                  ThreadLocalMode = NotThreadLocal, unsigned AddressSpace = 0,
                  bool isExternallyInitialized = false);
 
-  ~GlobalVariable() {
+  ~GlobalVariable() override {
     NumOperands = 1; // FIXME: needed by operator delete
   }
 
@@ -154,16 +143,6 @@ public:
   ///
   bool isConstant() const { return isConstantGlobal; }
   void setConstant(bool Val) { isConstantGlobal = Val; }
-
-  /// If the value is "Thread Local", its value isn't shared by the threads.
-  bool isThreadLocal() const { return threadLocalMode != NotThreadLocal; }
-  void setThreadLocal(bool Val) {
-    threadLocalMode = Val ? GeneralDynamicTLSModel : NotThreadLocal;
-  }
-  void setThreadLocalMode(ThreadLocalMode Val) { threadLocalMode = Val; }
-  ThreadLocalMode getThreadLocalMode() const {
-    return static_cast<ThreadLocalMode>(threadLocalMode);
-  }
 
   bool isExternallyInitialized() const {
     return isExternallyInitializedConstant;

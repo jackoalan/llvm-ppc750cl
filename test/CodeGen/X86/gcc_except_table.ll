@@ -13,14 +13,14 @@ define i32 @main() uwtable optsize ssp {
 ; APPLE: GCC_except_table0:
 ; APPLE: Lexception0:
 
-; MINGW64: .cfi_startproc
-; MINGW64: .cfi_personality 0, __gxx_personality_v0
-; MINGW64: .cfi_lsda 0, .Lexception0
-; MINGW64: .cfi_def_cfa_offset 16
+; MINGW64: .seh_proc
+; MINGW64: .seh_handler __gxx_personality_v0
+; MINGW64: .seh_setframe 5, 32
 ; MINGW64: callq _Unwind_Resume
-; MINGW64: .cfi_endproc
+; MINGW64: .seh_handlerdata
 ; MINGW64: GCC_except_table0:
 ; MINGW64: Lexception0:
+; MINGW64: .seh_endproc
 
 ; MINGW32: .cfi_startproc
 ; MINGW32: .cfi_personality 0, ___gxx_personality_v0
@@ -37,6 +37,7 @@ entry:
 
 lpad:
   %0 = landingpad { i8*, i32 } personality i8* bitcast (i32 (...)* @__gxx_personality_v0 to i8*)
+          cleanup
           catch i8* bitcast (i8** @_ZTIi to i8*)
   br label %eh.resume
 
@@ -50,7 +51,3 @@ eh.resume:
 declare void @_Z1fv() optsize
 
 declare i32 @__gxx_personality_v0(...)
-
-; CHECK: Leh_func_end0:
-; CHECK: GCC_except_table0
-; CHECK: = Leh_func_end0-

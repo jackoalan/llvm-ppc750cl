@@ -30,8 +30,8 @@ using namespace llvm;
 namespace {
 
 class R600MCCodeEmitter : public AMDGPUMCCodeEmitter {
-  R600MCCodeEmitter(const R600MCCodeEmitter &) LLVM_DELETED_FUNCTION;
-  void operator=(const R600MCCodeEmitter &) LLVM_DELETED_FUNCTION;
+  R600MCCodeEmitter(const R600MCCodeEmitter &) = delete;
+  void operator=(const R600MCCodeEmitter &) = delete;
   const MCInstrInfo &MCII;
   const MCRegisterInfo &MRI;
 
@@ -41,14 +41,14 @@ public:
     : MCII(mcii), MRI(mri) { }
 
   /// \brief Encode the instruction and write it to the OS.
-  virtual void EncodeInstruction(const MCInst &MI, raw_ostream &OS,
+  void EncodeInstruction(const MCInst &MI, raw_ostream &OS,
                          SmallVectorImpl<MCFixup> &Fixups,
-                         const MCSubtargetInfo &STI) const;
+                         const MCSubtargetInfo &STI) const override;
 
   /// \returns the encoding for an MCOperand.
-  virtual uint64_t getMachineOpValue(const MCInst &MI, const MCOperand &MO,
-                                     SmallVectorImpl<MCFixup> &Fixups,
-                                     const MCSubtargetInfo &STI) const;
+  uint64_t getMachineOpValue(const MCInst &MI, const MCOperand &MO,
+                             SmallVectorImpl<MCFixup> &Fixups,
+                             const MCSubtargetInfo &STI) const override;
 private:
 
   void EmitByte(unsigned int byte, raw_ostream &OS) const;
@@ -81,8 +81,8 @@ enum FCInstr {
 };
 
 MCCodeEmitter *llvm::createR600MCCodeEmitter(const MCInstrInfo &MCII,
-                                           const MCRegisterInfo &MRI,
-                                           const MCSubtargetInfo &STI) {
+                                             const MCRegisterInfo &MRI,
+					     MCContext &Ctx) {
   return new R600MCCodeEmitter(MCII, MRI);
 }
 
@@ -172,17 +172,13 @@ uint64_t R600MCCodeEmitter::getMachineOpValue(const MCInst &MI,
                                         SmallVectorImpl<MCFixup> &Fixup,
                                         const MCSubtargetInfo &STI) const {
   if (MO.isReg()) {
-    if (HAS_NATIVE_OPERANDS(MCII.get(MI.getOpcode()).TSFlags)) {
+    if (HAS_NATIVE_OPERANDS(MCII.get(MI.getOpcode()).TSFlags))
       return MRI.getEncodingValue(MO.getReg());
-    } else {
-      return getHWReg(MO.getReg());
-    }
-  } else if (MO.isImm()) {
-    return MO.getImm();
-  } else {
-    assert(0);
-    return 0;
+    return getHWReg(MO.getReg());
   }
+
+  assert(MO.isImm());
+  return MO.getImm();
 }
 
 #include "AMDGPUGenMCCodeEmitter.inc"

@@ -29,26 +29,28 @@ class raw_ostream;
 
 class MCELFStreamer : public MCObjectStreamer {
 public:
-  MCELFStreamer(MCContext &Context, MCAsmBackend &TAB, raw_ostream &OS,
+  MCELFStreamer(MCContext &Context, MCAsmBackend &TAB, raw_pwrite_stream &OS,
                 MCCodeEmitter *Emitter)
-      : MCObjectStreamer(Context, TAB, OS, Emitter),
-        SeenIdent(false) {}
+      : MCObjectStreamer(Context, TAB, OS, Emitter), SeenIdent(false) {}
 
-  MCELFStreamer(MCContext &Context, MCAsmBackend &TAB, raw_ostream &OS,
-                MCCodeEmitter *Emitter, MCAssembler *Assembler)
-      : MCObjectStreamer(Context, TAB, OS, Emitter, Assembler),
-        SeenIdent(false) {}
+  ~MCELFStreamer() override;
 
-  virtual ~MCELFStreamer();
+  /// state management
+  void reset() override {
+    SeenIdent = false;
+    LocalCommons.clear();
+    BindingExplicitlySet.clear();
+    BundleGroups.clear();
+    MCObjectStreamer::reset();
+  }
 
   /// @name MCStreamer Interface
   /// @{
 
-  void InitSections() override;
+  void InitSections(bool NoExecStack) override;
   void ChangeSection(const MCSection *Section,
                      const MCExpr *Subsection) override;
   void EmitLabel(MCSymbol *Symbol) override;
-  void EmitDebugLabel(MCSymbol *Symbol) override;
   void EmitAssemblerFlag(MCAssemblerFlag Flag) override;
   void EmitThumbFunc(MCSymbol *Func) override;
   void EmitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol) override;
@@ -60,8 +62,6 @@ public:
   void EmitCOFFSymbolStorageClass(int StorageClass) override;
   void EmitCOFFSymbolType(int Type) override;
   void EndCOFFSymbolDef() override;
-
-  MCSymbolData &getOrCreateSymbolData(const MCSymbol *Symbol) override;
 
   void EmitELFSize(MCSymbol *Symbol, const MCExpr *Value) override;
 
@@ -95,6 +95,9 @@ private:
 
   void fixSymbolsInTLSFixups(const MCExpr *expr);
 
+  /// \brief Merge the content of the fragment \p EF into the fragment \p DF.
+  void mergeFragment(MCDataFragment *, MCEncodedFragmentWithFixups *);
+
   bool SeenIdent;
 
   struct LocalCommon {
@@ -106,11 +109,15 @@ private:
   std::vector<LocalCommon> LocalCommons;
 
   SmallPtrSet<MCSymbol *, 16> BindingExplicitlySet;
+
+  /// BundleGroups - The stack of fragments holding the bundle-locked
+  /// instructions.
+  llvm::SmallVector<MCDataFragment *, 4> BundleGroups;
 };
 
 MCELFStreamer *createARMELFStreamer(MCContext &Context, MCAsmBackend &TAB,
-                                    raw_ostream &OS, MCCodeEmitter *Emitter,
-                                    bool RelaxAll, bool NoExecStack,
+                                    raw_pwrite_stream &OS,
+                                    MCCodeEmitter *Emitter, bool RelaxAll,
                                     bool IsThumb);
 
 } // end namespace llvm

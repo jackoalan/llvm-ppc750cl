@@ -14,14 +14,13 @@
 #ifndef LLVM_MC_MCVALUE_H
 #define LLVM_MC_MCVALUE_H
 
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/DataTypes.h"
 #include <cassert>
 
 namespace llvm {
 class MCAsmInfo;
-class MCSymbol;
-class MCSymbolRefExpr;
 class raw_ostream;
 
 /// MCValue - This represents an "assembler immediate".  In its most
@@ -56,10 +55,12 @@ public:
   bool isAbsolute() const { return !SymA && !SymB; }
 
   /// print - Print the value to the stream \p OS.
-  void print(raw_ostream &OS, const MCAsmInfo *MAI) const;
+  void print(raw_ostream &OS) const;
 
   /// dump - Print the value to stderr.
   void dump() const;
+
+  MCSymbolRefExpr::VariantKind getAccessVariant() const;
 
   static MCValue get(const MCSymbolRefExpr *SymA,
                      const MCSymbolRefExpr *SymB = nullptr,

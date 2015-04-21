@@ -32,8 +32,8 @@
 ///
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_ANALYSIS_LAZY_CALL_GRAPH
-#define LLVM_ANALYSIS_LAZY_CALL_GRAPH
+#ifndef LLVM_ANALYSIS_LAZYCALLGRAPH_H
+#define LLVM_ANALYSIS_LAZYCALLGRAPH_H
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/PointerUnion.h"
@@ -46,11 +46,11 @@
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/Support/Allocator.h"
 #include <iterator>
 
 namespace llvm {
-class ModuleAnalysisManager;
 class PreservedAnalyses;
 class raw_ostream;
 
@@ -113,20 +113,33 @@ public:
   /// be scanned for "calls" or uses of functions and its child information
   /// will be constructed. All of these results are accumulated and cached in
   /// the graph.
-  class iterator : public iterator_adaptor_base<
-                       iterator, NodeVectorImplT::iterator, Node> {
+  class iterator
+      : public iterator_adaptor_base<iterator, NodeVectorImplT::iterator,
+                                     std::forward_iterator_tag, Node> {
     friend class LazyCallGraph;
     friend class LazyCallGraph::Node;
 
     LazyCallGraph *G;
-    NodeVectorImplT::iterator NI;
+    NodeVectorImplT::iterator E;
 
     // Build the iterator for a specific position in a node list.
-    iterator(LazyCallGraph &G, NodeVectorImplT::iterator NI)
-        : iterator_adaptor_base(NI), G(&G) {}
+    iterator(LazyCallGraph &G, NodeVectorImplT::iterator NI,
+             NodeVectorImplT::iterator E)
+        : iterator_adaptor_base(NI), G(&G), E(E) {
+      while (I != E && I->isNull())
+        ++I;
+    }
 
   public:
     iterator() {}
+
+    using iterator_adaptor_base::operator++;
+    iterator &operator++() {
+      do {
+        ++I;
+      } while (I != E && I->isNull());
+      return *this;
+    }
 
     reference operator*() const {
       if (I->is<Node *>())
@@ -163,6 +176,12 @@ public:
     /// CalleeIndexMap.
     Node(LazyCallGraph &G, Function &F);
 
+    /// \brief Internal helper to insert a callee.
+    void insertEdgeInternal(Function &Callee);
+
+    /// \brief Internal helper to insert a callee.
+    void insertEdgeInternal(Node &CalleeN);
+
     /// \brief Internal helper to remove a callee from this node.
     void removeEdgeInternal(Function &Callee);
 
@@ -173,8 +192,10 @@ public:
       return F;
     };
 
-    iterator begin() const { return iterator(*G, Callees.begin()); }
-    iterator end() const { return iterator(*G, Callees.end()); }
+    iterator begin() const {
+      return iterator(*G, Callees.begin(), Callees.end());
+    }
+    iterator end() const { return iterator(*G, Callees.end(), Callees.end()); }
 
     /// Equality is defined as address equality.
     bool operator==(const Node &N) const { return this == &N; }
@@ -217,6 +238,26 @@ public:
       return iterator_range<parent_iterator>(parent_begin(), parent_end());
     }
 
+    /// \brief Test if this SCC is a parent of \a C.
+    bool isParentOf(const SCC &C) const { return C.isChildOf(*this); }
+
+    /// \brief Test if this SCC is an ancestor of \a C.
+    bool isAncestorOf(const SCC &C) const { return C.isDescendantOf(*this); }
+
+    /// \brief Test if this SCC is a child of \a C.
+    bool isChildOf(const SCC &C) const {
+      return ParentSCCs.count(const_cast<SCC *>(&C));
+    }
+
+    /// \brief Test if this SCC is a descendant of \a C.
+    bool isDescendantOf(const SCC &C) const;
+
+    /// \brief Short name useful for debugging or logging.
+    ///
+    /// We use the name of the first function in the SCC to name the SCC for
+    /// the purposes of debugging and logging.
+    StringRef getName() const { return (*begin())->getFunction().getName(); }
+
     ///@{
     /// \name Mutation API
     ///
@@ -225,6 +266,36 @@ public:
     ///
     /// Note that these methods sometimes have complex runtimes, so be careful
     /// how you call them.
+
+    /// \brief Insert an edge from one node in this SCC to another in this SCC.
+    ///
+    /// By the definition of an SCC, this does not change the nature or make-up
+    /// of any SCCs.
+    void insertIntraSCCEdge(Node &CallerN, Node &CalleeN);
+
+    /// \brief Insert an edge whose tail is in this SCC and head is in some
+    /// child SCC.
+    ///
+    /// There must be an existing path from the caller to the callee. This
+    /// operation is inexpensive and does not change the set of SCCs in the
+    /// graph.
+    void insertOutgoingEdge(Node &CallerN, Node &CalleeN);
+
+    /// \brief Insert an edge whose tail is in a descendant SCC and head is in
+    /// this SCC.
+    ///
+    /// There must be an existing path from the callee to the caller in this
+    /// case. NB! This is has the potential to be a very expensive function. It
+    /// inherently forms a cycle in the prior SCC DAG and we have to merge SCCs
+    /// to resolve that cycle. But finding all of the SCCs which participate in
+    /// the cycle can in the worst case require traversing every SCC in the
+    /// graph. Every attempt is made to avoid that, but passes must still
+    /// exercise caution calling this routine repeatedly.
+    ///
+    /// FIXME: We could possibly optimize this quite a bit for cases where the
+    /// caller and callee are very nearby in the graph. See comments in the
+    /// implementation for details, but that use case might impact users.
+    SmallVector<SCC *, 1> insertIncomingEdge(Node &CallerN, Node &CalleeN);
 
     /// \brief Remove an edge whose source is in this SCC and target is *not*.
     ///
@@ -251,7 +322,7 @@ public:
     /// 2) This SCC will be the parent of any new SCCs. Thus, this SCC is
     ///    preserved as the root of any new SCC directed graph formed.
     /// 3) No SCC other than this SCC has its member set changed (this is
-    ///    inherent in the definiton of removing such an edge).
+    ///    inherent in the definition of removing such an edge).
     /// 4) All of the parent links of the SCC graph will be updated to reflect
     ///    the new SCC structure.
     /// 5) All SCCs formed out of this SCC, excluding this SCC, will be
@@ -326,8 +397,10 @@ public:
   LazyCallGraph(LazyCallGraph &&G);
   LazyCallGraph &operator=(LazyCallGraph &&RHS);
 
-  iterator begin() { return iterator(*this, EntryNodes.begin()); }
-  iterator end() { return iterator(*this, EntryNodes.end()); }
+  iterator begin() {
+    return iterator(*this, EntryNodes.begin(), EntryNodes.end());
+  }
+  iterator end() { return iterator(*this, EntryNodes.end(), EntryNodes.end()); }
 
   postorder_scc_iterator postorder_scc_begin() {
     return postorder_scc_iterator(*this);
@@ -370,6 +443,14 @@ public:
   ///
   /// Once you begin manipulating a call graph's SCCs, you must perform all
   /// mutation of the graph via the SCC methods.
+
+  /// \brief Update the call graph after inserting a new edge.
+  void insertEdge(Node &Caller, Function &Callee);
+
+  /// \brief Update the call graph after inserting a new edge.
+  void insertEdge(Function &Caller, Function &Callee) {
+    return insertEdge(get(Caller), Callee);
+  }
 
   /// \brief Update the call graph after deleting an edge.
   void removeEdge(Node &Caller, Function &Callee);
@@ -462,11 +543,13 @@ public:
 
   static void *ID() { return (void *)&PassID; }
 
-  /// \brief Compute the \c LazyCallGraph for a the module \c M.
+  static StringRef name() { return "Lazy CallGraph Analysis"; }
+
+  /// \brief Compute the \c LazyCallGraph for the module \c M.
   ///
   /// This just builds the set of entry points to the call graph. The rest is
   /// built lazily as it is walked.
-  LazyCallGraph run(Module *M) { return LazyCallGraph(*M); }
+  LazyCallGraph run(Module &M) { return LazyCallGraph(M); }
 
 private:
   static char PassID;
@@ -481,7 +564,7 @@ class LazyCallGraphPrinterPass {
 public:
   explicit LazyCallGraphPrinterPass(raw_ostream &OS);
 
-  PreservedAnalyses run(Module *M, ModuleAnalysisManager *AM);
+  PreservedAnalyses run(Module &M, ModuleAnalysisManager *AM);
 
   static StringRef name() { return "LazyCallGraphPrinterPass"; }
 };

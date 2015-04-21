@@ -675,6 +675,48 @@
 	lbh	%r0, 524287(%r15,%r1)
 	lbh	%r15, 0
 
+#CHECK: ldxbra	%f0, 0, %f0, 0          # encoding: [0xb3,0x45,0x00,0x00]
+#CHECK: ldxbra	%f0, 0, %f0, 15         # encoding: [0xb3,0x45,0x0f,0x00]
+#CHECK: ldxbra	%f0, 0, %f13, 0         # encoding: [0xb3,0x45,0x00,0x0d]
+#CHECK: ldxbra	%f0, 15, %f0, 0         # encoding: [0xb3,0x45,0xf0,0x00]
+#CHECK: ldxbra	%f4, 5, %f8, 9          # encoding: [0xb3,0x45,0x59,0x48]
+#CHECK: ldxbra	%f13, 0, %f0, 0         # encoding: [0xb3,0x45,0x00,0xd0]
+
+	ldxbra	%f0, 0, %f0, 0
+	ldxbra	%f0, 0, %f0, 15
+	ldxbra	%f0, 0, %f13, 0
+	ldxbra	%f0, 15, %f0, 0
+	ldxbra	%f4, 5, %f8, 9
+	ldxbra	%f13, 0, %f0, 0
+
+#CHECK: ledbra	%f0, 0, %f0, 0          # encoding: [0xb3,0x44,0x00,0x00]
+#CHECK: ledbra	%f0, 0, %f0, 15         # encoding: [0xb3,0x44,0x0f,0x00]
+#CHECK: ledbra	%f0, 0, %f15, 0         # encoding: [0xb3,0x44,0x00,0x0f]
+#CHECK: ledbra	%f0, 15, %f0, 0         # encoding: [0xb3,0x44,0xf0,0x00]
+#CHECK: ledbra	%f4, 5, %f6, 7          # encoding: [0xb3,0x44,0x57,0x46]
+#CHECK: ledbra	%f15, 0, %f0, 0         # encoding: [0xb3,0x44,0x00,0xf0]
+
+	ledbra	%f0, 0, %f0, 0
+	ledbra	%f0, 0, %f0, 15
+	ledbra	%f0, 0, %f15, 0
+	ledbra	%f0, 15, %f0, 0
+	ledbra	%f4, 5, %f6, 7
+	ledbra	%f15, 0, %f0, 0
+
+#CHECK: lexbra	%f0, 0, %f0, 0          # encoding: [0xb3,0x46,0x00,0x00]
+#CHECK: lexbra	%f0, 0, %f0, 15         # encoding: [0xb3,0x46,0x0f,0x00]
+#CHECK: lexbra	%f0, 0, %f13, 0         # encoding: [0xb3,0x46,0x00,0x0d]
+#CHECK: lexbra	%f0, 15, %f0, 0         # encoding: [0xb3,0x46,0xf0,0x00]
+#CHECK: lexbra	%f4, 5, %f8, 9          # encoding: [0xb3,0x46,0x59,0x48]
+#CHECK: lexbra	%f13, 0, %f0, 0         # encoding: [0xb3,0x46,0x00,0xd0]
+
+	lexbra	%f0, 0, %f0, 0
+	lexbra	%f0, 0, %f0, 15
+	lexbra	%f0, 0, %f13, 0
+	lexbra	%f0, 15, %f0, 0
+	lexbra	%f4, 5, %f8, 9
+	lexbra	%f13, 0, %f0, 0
+
 #CHECK: lfh	%r0, -524288            # encoding: [0xe3,0x00,0x00,0x00,0x80,0xca]
 #CHECK: lfh	%r0, -1                 # encoding: [0xe3,0x00,0x0f,0xff,0xff,0xca]
 #CHECK: lfh	%r0, 0                  # encoding: [0xe3,0x00,0x00,0x00,0x00,0xca]
@@ -978,6 +1020,16 @@
 	ork	%r0,%r15,%r0
 	ork	%r15,%r0,%r0
 	ork	%r7,%r8,%r9
+
+#CHECK: popcnt	%r0, %r0                # encoding: [0xb9,0xe1,0x00,0x00]
+#CHECK: popcnt	%r0, %r15               # encoding: [0xb9,0xe1,0x00,0x0f]
+#CHECK: popcnt	%r15, %r0               # encoding: [0xb9,0xe1,0x00,0xf0]
+#CHECK: popcnt	%r7, %r8                # encoding: [0xb9,0xe1,0x00,0x78]
+
+	popcnt	%r0,%r0
+	popcnt	%r0,%r15
+	popcnt	%r15,%r0
+	popcnt	%r7,%r8
 
 #CHECK: risbhg	%r0, %r0, 0, 0, 0       # encoding: [0xec,0x00,0x00,0x00,0x00,0x5d]
 #CHECK: risbhg	%r0, %r0, 0, 0, 63      # encoding: [0xec,0x00,0x00,0x00,0x3f,0x5d]

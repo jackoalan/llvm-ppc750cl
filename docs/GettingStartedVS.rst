@@ -45,20 +45,20 @@ and software you will need.
 
 Hardware
 --------
-Any system that can adequately run Visual Studio 2012 is fine. The LLVM
+Any system that can adequately run Visual Studio 2013 is fine. The LLVM
 source tree and object files, libraries and executables will consume
 approximately 3GB.
 
 Software
 --------
-You will need Visual Studio 2012 or higher.
+You will need Visual Studio 2013 or higher.
 
 You will also need the `CMake <http://www.cmake.org/>`_ build system since it
 generates the project files you will use to build with.
 
 If you would like to run the LLVM tests you will need `Python
-<http://www.python.org/>`_. Versions 2.4-2.7 are known to work. You will need
-`GnuWin32 <http://gnuwin32.sourceforge.net/>`_ tools, too.
+<http://www.python.org/>`_. Version 2.7 and newer are known to work. You will
+need `GnuWin32 <http://gnuwin32.sourceforge.net/>`_ tools, too.
 
 Do not install the LLVM directory tree into a path containing spaces (e.g.
 ``C:\Documents and Settings\...``) as the configure step will fail.
@@ -99,6 +99,9 @@ Here's the short story for getting up and running quickly with LLVM:
      build.
    * See the :doc:`LLVM CMake guide <CMake>` for detailed information about
      how to configure the LLVM build.
+   * CMake generates project files for all build types. To select a specific
+     build type, use the Configuration manager from the VS IDE or the 
+     ``/property:Configuration`` command line option when using MSBuild.
 
 6. Start Visual Studio
 

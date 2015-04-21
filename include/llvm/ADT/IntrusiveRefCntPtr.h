@@ -21,10 +21,9 @@
 #ifndef LLVM_ADT_INTRUSIVEREFCNTPTR_H
 #define LLVM_ADT_INTRUSIVEREFCNTPTR_H
 
-#include "llvm/Support/Casting.h"
-#include "llvm/Support/Compiler.h"
 #include <atomic>
-#include <memory>
+#include <cassert>
+#include <cstddef>
 
 namespace llvm {
 
@@ -84,7 +83,7 @@ namespace llvm {
     friend struct IntrusiveRefCntPtrInfo;
   };
 
-  
+
   template <typename T> struct IntrusiveRefCntPtrInfo {
     static void retain(T *obj) { obj->Retain(); }
     static void release(T *obj) { obj->Release(); }
@@ -114,7 +113,7 @@ public:
       delete static_cast<const Derived*>(this);
   }
 };
-  
+
 //===----------------------------------------------------------------------===//
 /// IntrusiveRefCntPtr - A template class that implements a "smart pointer"
 ///  that assumes the wrapped object has a reference count associated
@@ -154,13 +153,13 @@ public:
     }
 
     template <class X>
-    IntrusiveRefCntPtr(IntrusiveRefCntPtr<X>&& S) : Obj(S.getPtr()) {
+    IntrusiveRefCntPtr(IntrusiveRefCntPtr<X>&& S) : Obj(S.get()) {
       S.Obj = 0;
     }
 
     template <class X>
     IntrusiveRefCntPtr(const IntrusiveRefCntPtr<X>& S)
-      : Obj(S.getPtr()) {
+      : Obj(S.get()) {
       retain();
     }
 
@@ -175,12 +174,9 @@ public:
 
     T* operator->() const { return Obj; }
 
-    T* getPtr() const { return Obj; }
+    T* get() const { return Obj; }
 
-    typedef T* (IntrusiveRefCntPtr::*unspecified_bool_type) () const;
-    operator unspecified_bool_type() const {
-      return Obj ? &IntrusiveRefCntPtr::getPtr : nullptr;
-    }
+    explicit operator bool() const { return Obj; }
 
     void swap(IntrusiveRefCntPtr& other) {
       T* tmp = other.Obj;
@@ -200,65 +196,90 @@ public:
   private:
     void retain() { if (Obj) IntrusiveRefCntPtrInfo<T>::retain(Obj); }
     void release() { if (Obj) IntrusiveRefCntPtrInfo<T>::release(Obj); }
+
+    template <typename X>
+    friend class IntrusiveRefCntPtr;
   };
 
   template<class T, class U>
   inline bool operator==(const IntrusiveRefCntPtr<T>& A,
                          const IntrusiveRefCntPtr<U>& B)
   {
-    return A.getPtr() == B.getPtr();
+    return A.get() == B.get();
   }
 
   template<class T, class U>
   inline bool operator!=(const IntrusiveRefCntPtr<T>& A,
                          const IntrusiveRefCntPtr<U>& B)
   {
-    return A.getPtr() != B.getPtr();
+    return A.get() != B.get();
   }
 
   template<class T, class U>
   inline bool operator==(const IntrusiveRefCntPtr<T>& A,
                          U* B)
   {
-    return A.getPtr() == B;
+    return A.get() == B;
   }
 
   template<class T, class U>
   inline bool operator!=(const IntrusiveRefCntPtr<T>& A,
                          U* B)
   {
-    return A.getPtr() != B;
+    return A.get() != B;
   }
 
   template<class T, class U>
   inline bool operator==(T* A,
                          const IntrusiveRefCntPtr<U>& B)
   {
-    return A == B.getPtr();
+    return A == B.get();
   }
 
   template<class T, class U>
   inline bool operator!=(T* A,
                          const IntrusiveRefCntPtr<U>& B)
   {
-    return A != B.getPtr();
+    return A != B.get();
+  }
+
+  template <class T>
+  bool operator==(std::nullptr_t A, const IntrusiveRefCntPtr<T> &B) {
+    return !B;
+  }
+
+  template <class T>
+  bool operator==(const IntrusiveRefCntPtr<T> &A, std::nullptr_t B) {
+    return B == A;
+  }
+
+  template <class T>
+  bool operator!=(std::nullptr_t A, const IntrusiveRefCntPtr<T> &B) {
+    return !(A == B);
+  }
+
+  template <class T>
+  bool operator!=(const IntrusiveRefCntPtr<T> &A, std::nullptr_t B) {
+    return !(A == B);
   }
 
 //===----------------------------------------------------------------------===//
 // LLVM-style downcasting support for IntrusiveRefCntPtr objects
 //===----------------------------------------------------------------------===//
 
+  template <typename From> struct simplify_type;
+
   template<class T> struct simplify_type<IntrusiveRefCntPtr<T> > {
     typedef T* SimpleType;
     static SimpleType getSimplifiedValue(IntrusiveRefCntPtr<T>& Val) {
-      return Val.getPtr();
+      return Val.get();
     }
   };
 
   template<class T> struct simplify_type<const IntrusiveRefCntPtr<T> > {
     typedef /*const*/ T* SimpleType;
     static SimpleType getSimplifiedValue(const IntrusiveRefCntPtr<T>& Val) {
-      return Val.getPtr();
+      return Val.get();
     }
   };
 

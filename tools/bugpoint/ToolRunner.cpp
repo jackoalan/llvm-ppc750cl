@@ -141,13 +141,13 @@ static std::string ProcessFailure(StringRef ProgPath, const char** Args,
 
   // Rerun the compiler, capturing any error messages to print them.
   SmallString<128> ErrorFilename;
-  int ErrorFD;
-  error_code EC = sys::fs::createTemporaryFile(
-      "bugpoint.program_error_messages", "", ErrorFD, ErrorFilename);
+  std::error_code EC = sys::fs::createTemporaryFile(
+      "bugpoint.program_error_messages", "", ErrorFilename);
   if (EC) {
     errs() << "Error making unique filename: " << EC.message() << "\n";
     exit(1);
   }
+
   RunProgramWithTimeout(ProgPath, Args, "", ErrorFilename.str(),
                         ErrorFilename.str(), Timeout, MemoryLimit);
   // FIXME: check return code ?
@@ -427,13 +427,14 @@ static void lexCommand(std::string &Message, const std::string &CommandLine,
     pos = CommandLine.find_first_of(delimiters, lastPos);
   }
 
-  CmdPath = sys::FindProgramByName(Command);
-  if (CmdPath.empty()) {
+  auto Path = sys::findProgramByName(Command);
+  if (!Path) {
     Message =
       std::string("Cannot find '") + Command +
-      "' in PATH!\n";
+      "' in PATH: " + Path.getError().message() + "\n";
     return;
   }
+  CmdPath = *Path;
 
   Message = "Found command in: " + CmdPath + "\n";
 }
@@ -478,7 +479,7 @@ GCC::FileType LLC::OutputCode(const std::string &Bitcode,
   const char *Suffix = (UseIntegratedAssembler ? ".llc.o" : ".llc.s");
 
   SmallString<128> UniqueFile;
-  error_code EC =
+  std::error_code EC =
       sys::fs::createUniqueFile(Bitcode + "-%%%%%%%" + Suffix, UniqueFile);
   if (EC) {
     errs() << "Error making unique filename: " << EC.message() << "\n";
@@ -715,7 +716,7 @@ int GCC::ExecuteProgram(const std::string &ProgramFile,
   GCCArgs.push_back("-o");
 
   SmallString<128> OutputBinary;
-  error_code EC =
+  std::error_code EC =
       sys::fs::createUniqueFile(ProgramFile + "-%%%%%%%.gcc.exe", OutputBinary);
   if (EC) {
     errs() << "Error making unique filename: " << EC.message() << "\n";
@@ -825,7 +826,7 @@ int GCC::MakeSharedObject(const std::string &InputFile, FileType fileType,
                           const std::vector<std::string> &ArgsForGCC,
                           std::string &Error) {
   SmallString<128> UniqueFilename;
-  error_code EC = sys::fs::createUniqueFile(
+  std::error_code EC = sys::fs::createUniqueFile(
       InputFile + "-%%%%%%%" + LTDL_SHLIB_EXT, UniqueFilename);
   if (EC) {
     errs() << "Error making unique filename: " << EC.message() << "\n";
@@ -907,16 +908,24 @@ int GCC::MakeSharedObject(const std::string &InputFile, FileType fileType,
 GCC *GCC::create(std::string &Message,
                  const std::string &GCCBinary,
                  const std::vector<std::string> *Args) {
-  std::string GCCPath = sys::FindProgramByName(GCCBinary);
-  if (GCCPath.empty()) {
-    Message = "Cannot find `"+ GCCBinary +"' in PATH!\n";
+  auto GCCPath = sys::findProgramByName(GCCBinary);
+  if (!GCCPath) {
+    Message = "Cannot find `" + GCCBinary + "' in PATH: " +
+              GCCPath.getError().message() + "\n";
     return nullptr;
   }
 
   std::string RemoteClientPath;
-  if (!RemoteClient.empty())
-    RemoteClientPath = sys::FindProgramByName(RemoteClient);
+  if (!RemoteClient.empty()) {
+    auto Path = sys::findProgramByName(RemoteClient);
+    if (!Path) {
+      Message = "Cannot find `" + RemoteClient + "' in PATH: " +
+                Path.getError().message() + "\n";
+      return nullptr;
+    }
+    RemoteClientPath = *Path;
+  }
 
-  Message = "Found gcc: " + GCCPath + "\n";
-  return new GCC(GCCPath, RemoteClientPath, Args);
+  Message = "Found gcc: " + *GCCPath + "\n";
+  return new GCC(*GCCPath, RemoteClientPath, Args);
 }

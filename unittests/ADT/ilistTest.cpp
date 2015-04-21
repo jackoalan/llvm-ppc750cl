@@ -21,7 +21,8 @@ struct Node : ilist_node<Node> {
   int Value;
 
   Node() {}
-  Node(int _Value) : Value(_Value) {}
+  Node(int Value) : Value(Value) {}
+  Node(const Node&) = default;
   ~Node() { Value = -1; }
 };
 
@@ -29,8 +30,8 @@ TEST(ilistTest, Basic) {
   ilist<Node> List;
   List.push_back(Node(1));
   EXPECT_EQ(1, List.back().Value);
-  EXPECT_EQ(0, List.back().getPrevNode());
-  EXPECT_EQ(0, List.back().getNextNode());
+  EXPECT_EQ(nullptr, List.back().getPrevNode());
+  EXPECT_EQ(nullptr, List.back().getNextNode());
 
   List.push_back(Node(2));
   EXPECT_EQ(2, List.back().Value);

@@ -93,8 +93,8 @@ class MipsInst<dag outs, dag ins, string asmstr, list<dag> pattern,
 // Mips32/64 Instruction Format
 class InstSE<dag outs, dag ins, string asmstr, list<dag> pattern,
              InstrItinClass itin, Format f, string opstr = ""> :
-  MipsInst<outs, ins, asmstr, pattern, itin, f> {
-  let Predicates = [HasStdEnc];
+  MipsInst<outs, ins, asmstr, pattern, itin, f>, PredicateControl {
+  let EncodingPredicates = [HasStdEnc];
   string BaseOpcode = opstr;
   string Arch;
 }
@@ -109,9 +109,9 @@ class MipsPseudo<dag outs, dag ins, list<dag> pattern,
 
 // Mips32/64 Pseudo Instruction Format
 class PseudoSE<dag outs, dag ins, list<dag> pattern,
-               InstrItinClass itin = IIPseudo>:
-  MipsPseudo<outs, ins, pattern, itin> {
-  let Predicates = [HasStdEnc];
+               InstrItinClass itin = IIPseudo> :
+  MipsPseudo<outs, ins, pattern, itin>, PredicateControl {
+  let EncodingPredicates = [HasStdEnc];
 }
 
 // Pseudo-instructions for alternate assembly syntax (never used by codegen).
@@ -297,6 +297,19 @@ class BGEZ_FM<bits<6> op, bits<5> funct> : StdArch {
   let Inst{15-0}  = offset;
 }
 
+class BBIT_FM<bits<6> op> : StdArch {
+  bits<5>  rs;
+  bits<5>  p;
+  bits<16> offset;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = op;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = p;
+  let Inst{15-0}  = offset;
+}
+
 class SLTI_FM<bits<6> op> : StdArch {
   bits<5> rt;
   bits<5> rs;
@@ -411,6 +424,20 @@ class SYNC_FM : StdArch {
   let Inst{5-0}   = 0xf;
 }
 
+class SYNCI_FM : StdArch {
+  // Produced by the mem_simm16 address as reg << 16 | imm (see getMemEncoding).
+  bits<21> addr;
+  bits<5> rs = addr{20-16};
+  bits<16> offset = addr{15-0};
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b000001;
+  let Inst{25-21} = rs;
+  let Inst{20-16} = 0b11111;
+  let Inst{15-0}  = offset;
+}
+
 class MULT_FM<bits<6> op, bits<6> funct> : StdArch {
   bits<5>  rs;
   bits<5>  rt;
@@ -440,7 +467,7 @@ class EXT_FM<bits<6> funct> : StdArch {
   let Inst{5-0}   = funct;
 }
 
-class RDHWR_FM {
+class RDHWR_FM : StdArch {
   bits<5> rt;
   bits<5> rd;
 
@@ -842,4 +869,65 @@ class BARRIER_FM<bits<5> op> : StdArch {
   let Inst{15-11} = 0; // rd = 0
   let Inst{10-6} = op; // Operation
   let Inst{5-0} = 0;   // SLL
+}
+
+class SDBBP_FM : StdArch {
+  bits<20> code_;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0b011100; // SPECIAL2
+  let Inst{25-6} = code_;
+  let Inst{5-0} = 0b111111;   // SDBBP
+}
+
+class JR_HB_FM<bits<6> op> : StdArch{
+  bits<5> rs;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0; // SPECIAL
+  let Inst{25-21} = rs;
+  let Inst{20-11} = 0;
+  let Inst{10} = 1;
+  let Inst{9-6} = 0;
+  let Inst{5-0} = op;
+}
+
+class JALR_HB_FM<bits<6> op> : StdArch {
+  bits<5> rd;
+  bits<5> rs;
+
+  bits<32> Inst;
+
+  let Inst{31-26} = 0; // SPECIAL
+  let Inst{25-21} = rs;
+  let Inst{20-16} = 0;
+  let Inst{15-11} = rd;
+  let Inst{10} = 1;
+  let Inst{9-6} = 0;
+  let Inst{5-0} = op;
+}
+
+class COP0_TLB_FM<bits<6> op> : StdArch {
+  bits<32> Inst;
+
+  let Inst{31-26} = 0x10; // COP0
+  let Inst{25} = 1;       // CO
+  let Inst{24-6} = 0;
+  let Inst{5-0} = op;     // Operation
+}
+
+class CACHEOP_FM<bits<6> op> : StdArch {
+  bits<21> addr;
+  bits<5> hint;
+  bits<5> base = addr{20-16};
+  bits<16> offset = addr{15-0};
+
+  bits<32> Inst;
+
+  let Inst{31-26} = op;
+  let Inst{25-21} = base;
+  let Inst{20-16} = hint;
+  let Inst{15-0}  = offset;
 }

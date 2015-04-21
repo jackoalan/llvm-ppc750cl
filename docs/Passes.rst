@@ -261,12 +261,6 @@ returns "I don't know" for alias queries.  NoAA is unlike other alias analysis
 implementations, in that it does not chain to a previous analysis.  As such it
 doesn't follow many of the rules that other alias analyses must.
 
-``-no-profile``: No Profile Information
----------------------------------------
-
-The default "no profile" implementation of the abstract ``ProfileInfo``
-interface.
-
 ``-postdomfrontier``: Post-Dominance Frontier Construction
 ----------------------------------------------------------
 
@@ -335,23 +329,6 @@ This pass simply prints out the entire module when it is executed.
 This pass is used to seek out all of the types in use by the program.  Note
 that this analysis explicitly does not include types only used by the symbol
 table.
-
-``-profile-estimator``: Estimate profiling information
-------------------------------------------------------
-
-Profiling information that estimates the profiling information in a very crude
-and unimaginative way.
-
-``-profile-loader``: Load profile information from ``llvmprof.out``
--------------------------------------------------------------------
-
-A concrete implementation of profiling information that loads the information
-from a profile dump file.
-
-``-profile-verifier``: Verify profiling information
----------------------------------------------------
-
-Pass that checks profiling information for plausibility.
 
 ``-regions``: Detect single entry single exit regions
 -----------------------------------------------------
@@ -625,24 +602,6 @@ where it is profitable, the loop could be transformed to count down to zero
 ------------------------------------------
 
 Bottom-up inlining of functions into callees.
-
-``-insert-edge-profiling``: Insert instrumentation for edge profiling
----------------------------------------------------------------------
-
-This pass instruments the specified program with counters for edge profiling.
-Edge profiling can give a reasonable approximation of the hot paths through a
-program, and is used for a wide variety of program transformations.
-
-Note that this implementation is very naïve.  It inserts a counter for *every*
-edge in the program, instead of using control flow information to prune the
-number of counters inserted.
-
-``-insert-optimal-edge-profiling``: Insert optimal instrumentation for edge profiling
--------------------------------------------------------------------------------------
-
-This pass instruments the specified program with counters for edge profiling.
-Edge profiling can give a reasonable approximation of the hot paths through a
-program, and is used for a wide variety of program transformations.
 
 .. _passes-instcombine:
 
@@ -932,17 +891,24 @@ calls, or transforming sets of stores into ``memset``\ s.
 
 This pass looks for equivalent functions that are mergable and folds them.
 
-A hash is computed from the function, based on its type and number of basic
-blocks.
+Total-ordering is introduced among the functions set: we define comparison
+that answers for every two functions which of them is greater. It allows to
+arrange functions into the binary tree.
 
-Once all hashes are computed, we perform an expensive equality comparison on
-each function pair.  This takes n^2/2 comparisons per bucket, so it's important
-that the hash function be high quality.  The equality comparison iterates
-through each instruction in each basic block.
+For every new function we check for equivalent in tree.
 
-When a match is found the functions are folded.  If both functions are
-overridable, we move the functionality into a new internal function and leave
-two overridable thunks to it.
+If equivalent exists we fold such functions. If both functions are overridable,
+we move the functionality into a new internal function and leave two
+overridable thunks to it.
+
+If there is no equivalent, then we add this function to tree.
+
+Lookup routine has O(log(n)) complexity, while whole merging process has
+complexity of O(n*log(n)).
+
+Read
+:doc:`this <MergeFunctions>`
+article for more details.
 
 ``-mergereturn``: Unify function exit nodes
 -------------------------------------------
@@ -1152,13 +1118,6 @@ This is a little utility pass that gives instructions names, this is mostly
 useful when diffing the effect of an optimization because deleting an unnamed
 instruction can change all other instruction numbering, making the diff very
 noisy.
-
-``-preverify``: Preliminary module verification
------------------------------------------------
-
-Ensures that the module is in the form required by the :ref:`Module Verifier
-<passes-verify>` pass.  Running the verifier runs this pass automatically, so
-there should be no need to use it directly.
 
 .. _passes-verify:
 

@@ -54,6 +54,16 @@ RelocModel("relocation-model",
                       "Relocatable external references, non-relocatable code"),
               clEnumValEnd));
 
+cl::opt<ThreadModel::Model>
+TMModel("thread-model",
+        cl::desc("Choose threading model"),
+        cl::init(ThreadModel::POSIX),
+        cl::values(clEnumValN(ThreadModel::POSIX, "posix",
+                              "POSIX thread model"),
+                   clEnumValN(ThreadModel::Single, "single",
+                              "Single thread model"),
+                   clEnumValEnd));
+
 cl::opt<llvm::CodeModel::Model>
 CMModel("code-model",
         cl::desc("Choose code model"),
@@ -70,11 +80,6 @@ CMModel("code-model",
                               "Large code model"),
                    clEnumValEnd));
 
-cl::opt<bool>
-RelaxAll("mc-relax-all",
-         cl::desc("When used with filetype=obj, "
-                  "relax all fixups in the emitted object file"));
-
 cl::opt<TargetMachine::CodeGenFileType>
 FileType("filetype", cl::init(TargetMachine::CGFT_AssemblyFile),
   cl::desc("Choose a file type (not all types are supported by all targets):"),
@@ -86,17 +91,6 @@ FileType("filetype", cl::init(TargetMachine::CGFT_AssemblyFile),
              clEnumValN(TargetMachine::CGFT_Null, "null",
                         "Emit nothing, for performance testing"),
              clEnumValEnd));
-
-cl::opt<bool> DisableCFI("disable-cfi", cl::Hidden,
-                         cl::desc("Do not use .cfi_* directives"));
-
-cl::opt<bool> EnableDwarfDirectory("enable-dwarf-directory", cl::Hidden,
-                  cl::desc("Use .file directives with an explicit directory."));
-
-cl::opt<bool>
-DisableRedZone("disable-red-zone",
-               cl::desc("Do not emit code that uses the red zone."),
-               cl::init(false));
 
 cl::opt<bool>
 EnableFPMAD("enable-fp-mad",
@@ -191,8 +185,8 @@ EnablePIE("enable-pie",
           cl::init(false));
 
 cl::opt<bool>
-UseInitArray("use-init-array",
-             cl::desc("Use .init_array instead of .ctors."),
+UseCtors("use-ctors",
+             cl::desc("Use .ctors instead of .init_array."),
              cl::init(false));
 
 cl::opt<std::string> StopAfter("stop-after",
@@ -203,6 +197,34 @@ cl::opt<std::string> StartAfter("start-after",
                           cl::desc("Resume compilation after a specific pass"),
                           cl::value_desc("pass-name"),
                           cl::init(""));
+
+cl::opt<bool> DataSections("data-sections",
+                           cl::desc("Emit data into separate sections"),
+                           cl::init(false));
+
+cl::opt<bool>
+FunctionSections("function-sections",
+                 cl::desc("Emit functions into separate sections"),
+                 cl::init(false));
+
+cl::opt<bool> UniqueSectionNames("unique-section-names",
+                                 cl::desc("Give unique names to every section"),
+                                 cl::init(true));
+
+cl::opt<llvm::JumpTable::JumpTableType>
+JTableType("jump-table-type",
+          cl::desc("Choose the type of Jump-Instruction Table for jumptable."),
+          cl::init(JumpTable::Single),
+          cl::values(
+              clEnumValN(JumpTable::Single, "single",
+                         "Create a single table for all jumptable functions"),
+              clEnumValN(JumpTable::Arity, "arity",
+                         "Create one table per number of parameters."),
+              clEnumValN(JumpTable::Simplified, "simplified",
+                         "Create one table per simplified function type."),
+              clEnumValN(JumpTable::Full, "full",
+                         "Create one table per unique function type."),
+              clEnumValEnd));
 
 // Common utility function tightly tied to the options listed here. Initializes
 // a TargetOptions object with CodeGen flags and returns it.
@@ -225,9 +247,15 @@ static inline TargetOptions InitTargetOptionsFromCodeGenFlags() {
   Options.StackAlignmentOverride = OverrideStackAlignment;
   Options.TrapFuncName = TrapFuncName;
   Options.PositionIndependentExecutable = EnablePIE;
-  Options.UseInitArray = UseInitArray;
+  Options.UseInitArray = !UseCtors;
+  Options.DataSections = DataSections;
+  Options.FunctionSections = FunctionSections;
+  Options.UniqueSectionNames = UniqueSectionNames;
 
   Options.MCOptions = InitMCTargetOptionsFromFlags();
+  Options.JTType = JTableType;
+
+  Options.ThreadModel = TMModel;
 
   return Options;
 }

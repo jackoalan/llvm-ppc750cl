@@ -11,8 +11,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLVM_TARGET_SYSTEMZINSTRINFO_H
-#define LLVM_TARGET_SYSTEMZINSTRINFO_H
+#ifndef LLVM_LIB_TARGET_SYSTEMZ_SYSTEMZINSTRINFO_H
+#define LLVM_LIB_TARGET_SYSTEMZ_SYSTEMZINSTRINFO_H
 
 #include "SystemZ.h"
 #include "SystemZRegisterInfo.h"
@@ -56,10 +56,13 @@ static inline unsigned getCompareZeroCCMask(unsigned int Flags) {
 // SystemZ MachineOperand target flags.
 enum {
   // Masks out the bits for the access model.
-  MO_SYMBOL_MODIFIER = (1 << 0),
+  MO_SYMBOL_MODIFIER = (3 << 0),
 
   // @GOT (aka @GOTENT)
-  MO_GOT = (1 << 0)
+  MO_GOT = (1 << 0),
+
+  // @INDNTPOFF
+  MO_INDNTPOFF = (2 << 0)
 };
 // Classifies a branch.
 enum BranchType {
@@ -110,9 +113,10 @@ struct Branch {
 };
 } // end namespace SystemZII
 
+class SystemZSubtarget;
 class SystemZInstrInfo : public SystemZGenInstrInfo {
   const SystemZRegisterInfo RI;
-  SystemZTargetMachine &TM;
+  SystemZSubtarget &STI;
 
   void splitMove(MachineBasicBlock::iterator MI, unsigned NewOpcode) const;
   void splitAdjDynAlloc(MachineBasicBlock::iterator MI) const;
@@ -130,7 +134,7 @@ class SystemZInstrInfo : public SystemZGenInstrInfo {
   virtual void anchor();
   
 public:
-  explicit SystemZInstrInfo(SystemZTargetMachine &TM);
+  explicit SystemZInstrInfo(SystemZSubtarget &STI);
 
   // Override TargetInstrInfo.
   unsigned isLoadFromStackSlot(const MachineInstr *MI,
@@ -182,11 +186,11 @@ public:
                                       MachineBasicBlock::iterator &MBBI,
                                       LiveVariables *LV) const override;
   MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
+                                      ArrayRef<unsigned> Ops,
                                       int FrameIndex) const override;
-  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr* MI,
-                                      const SmallVectorImpl<unsigned> &Ops,
-                                      MachineInstr* LoadMI) const override;
+  MachineInstr *foldMemoryOperandImpl(MachineFunction &MF, MachineInstr *MI,
+                                      ArrayRef<unsigned> Ops,
+                                      MachineInstr *LoadMI) const override;
   bool expandPostRAPseudo(MachineBasicBlock::iterator MBBI) const override;
   bool ReverseBranchCondition(SmallVectorImpl<MachineOperand> &Cond) const
     override;
@@ -229,7 +233,7 @@ public:
   // BRANCH exists, return the opcode for the latter, otherwise return 0.
   // MI, if nonnull, is the compare instruction.
   unsigned getCompareAndBranch(unsigned Opcode,
-                               const MachineInstr *MI = 0) const;
+                               const MachineInstr *MI = nullptr) const;
 
   // Emit code before MBBI in MI to move immediate value Value into
   // physical register Reg.

@@ -1,7 +1,5 @@
-; RUN: llc -verify-machineinstrs < %s -mtriple=aarch64-none-linux-gnu -O0 | FileCheck %s
-; RUN: llc -verify-machineinstrs < %s -mtriple=aarch64-none-linux-gnu -O0 -disable-fp-elim | FileCheck -check-prefix CHECK-WITHFP-AARCH64 %s
-; RUN: llc -verify-machineinstrs < %s -mtriple=arm64-none-linux-gnu | FileCheck %s
-; RUN: llc -verify-machineinstrs < %s -mtriple=arm64-none-linux-gnu -disable-fp-elim | FileCheck -check-prefix CHECK-WITHFP-ARM64 %s
+; RUN: llc -verify-machineinstrs < %s -mtriple=aarch64-none-linux-gnu | FileCheck %s
+; RUN: llc -verify-machineinstrs < %s -mtriple=aarch64-none-linux-gnu -disable-fp-elim | FileCheck -check-prefix CHECK-WITHFP-ARM64 %s
 
 ; Make sure a reasonably sane prologue and epilogue are
 ; generated. This test is not robust in the face of an frame-handling
@@ -51,7 +49,7 @@ define void @stack_local() {
 ; CHECK-LABEL: stack_local:
 ; CHECK: sub sp, sp, #16
 
-  %val = load i64* @var
+  %val = load i64, i64* @var
   store i64 %val, i64* %local_var
 ; CHECK-DAG: str {{x[0-9]+}}, [sp, #{{[0-9]+}}]
 
